@@ -18,7 +18,9 @@ from gaussian_viewer import (
     WIDTH,
     create_gaussian_scene_file,
     evaluate_gaussian_scene_consistency,
+    evaluate_selected_gaussian_scene,
     improve_gaussian_scene_consistency,
+    improve_selected_gaussian_scene,
     open_image_folder,
     project_gaussians,
     render,
@@ -204,6 +206,37 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertAlmostEqual(improved_score, good_score, places=4)
             self.assertEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
             np.testing.assert_allclose(improved_scene["gaussians"][0]["color"], scene["gaussians"][0]["color"], atol=1e-6)
+
+    def test_evaluate_selected_gaussian_scene_creates_scene_file_and_scores_it(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path, score = evaluate_selected_gaussian_scene(folder)
+
+            self.assertEqual(scene_path, folder / DEFAULT_SCENE_FILENAME)
+            self.assertTrue(scene_path.exists())
+            self.assertGreater(score, 0.0)
+
+    def test_improve_selected_gaussian_scene_updates_scene_file_and_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            scene_path.write_text(json.dumps(scene, indent=2), encoding="utf-8")
+
+            _, previous_score, improved_score = improve_selected_gaussian_scene(folder)
+            improved_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            self.assertGreater(improved_score, previous_score)
+            self.assertAlmostEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            self.assertAlmostEqual(improved_scene["gaussians"][0]["color"][0], 1.0, places=4)
 
 
 if __name__ == "__main__":

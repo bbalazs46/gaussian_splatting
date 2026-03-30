@@ -17,6 +17,8 @@ Vezérlők:
   Q / E          – lejjebb / feljebb mozgás
   Egér           – nézési irány
   O              – használandó mappa kiválasztása
+  C              – jelenet konzisztencia kiértékelése
+  I              – jelenet javítása
   Shift          – gyors mozgás (3×)
   ESC            – kilépés
 """
@@ -25,7 +27,6 @@ import copy
 import json
 import sys
 import math
-from contextlib import suppress
 import numpy as np
 import pygame
 from dataclasses import dataclass
@@ -116,8 +117,10 @@ def select_working_folder(
             title="Válaszd ki a használandó mappát",
         )
     finally:
-        with suppress(Exception):
+        try:
             root.destroy()
+        except (tk.TclError, AttributeError):
+            pass
 
     return Path(selected).expanduser().resolve() if selected else None
 
@@ -161,7 +164,7 @@ def _target_opacity_from_stats(stats: dict) -> float:
 
 
 def _wrap_degrees(angle: float) -> float:
-    """Egy szöget a [-180, 180] tartományba normalizál."""
+    """Egy szöget a [-180, 180) tartományba normalizál."""
     return float(((angle + 180.0) % 360.0) - 180.0)
 
 
@@ -216,6 +219,23 @@ def create_gaussian_scene_file(folder_path: str | Path, output_filename: str = D
     scene_path = Path(folder_path).expanduser().resolve() / output_filename
     scene_path.write_text(json.dumps(scene, indent=2), encoding="utf-8")
     return scene_path
+
+
+def load_or_create_gaussian_scene_file(
+    folder_path: str | Path | None,
+    scene_filename: str = DEFAULT_SCENE_FILENAME,
+) -> tuple[Path, dict]:
+    """Betölti a jelenetfájlt, vagy létrehozza, ha még nem létezik."""
+    if folder_path is None:
+        raise ValueError("Előbb válassz mappát az O billentyűvel.")
+
+    folder = Path(folder_path).expanduser().resolve()
+    scene_path = folder / scene_filename
+    if not scene_path.exists():
+        scene_path = create_gaussian_scene_file(folder, scene_filename)
+
+    scene_data = json.loads(scene_path.read_text(encoding="utf-8"))
+    return scene_path, scene_data
 
 
 def evaluate_gaussian_scene_consistency(scene_data: dict, folder_path: str | Path | None = None) -> float:
@@ -331,6 +351,30 @@ def improve_gaussian_scene_consistency(
     improved_scene["gaussians"] = new_gaussians
     improved_scene["consistency_score"] = evaluate_gaussian_scene_consistency(improved_scene, folder)
     return improved_scene
+
+
+def evaluate_selected_gaussian_scene(
+    folder_path: str | Path | None,
+    scene_filename: str = DEFAULT_SCENE_FILENAME,
+) -> tuple[Path, float]:
+    """Betölti a kiválasztott mappához tartozó jelenetet és visszaadja a pontszámát."""
+    scene_path, scene_data = load_or_create_gaussian_scene_file(folder_path, scene_filename)
+    score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
+    return scene_path, score
+
+
+def improve_selected_gaussian_scene(
+    folder_path: str | Path | None,
+    scene_filename: str = DEFAULT_SCENE_FILENAME,
+    step_size: float = 1.0,
+) -> tuple[Path, float, float]:
+    """Javítja a kiválasztott jelenetet, elmenti, és visszaadja az előtte/utána pontszámot."""
+    scene_path, scene_data = load_or_create_gaussian_scene_file(folder_path, scene_filename)
+    previous_score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
+    improved_scene = improve_gaussian_scene_consistency(scene_data, folder_path, step_size=step_size)
+    scene_path.write_text(json.dumps(improved_scene, indent=2), encoding="utf-8")
+    improved_score = float(improved_scene.get("consistency_score", previous_score))
+    return scene_path, previous_score, improved_score
 
 
 def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
@@ -617,6 +661,21 @@ def main() -> None:
                         folder_status = f"Kijelölt mappa: {selected_folder.name} ({image_count} kép)"
                 except (RuntimeError, FileNotFoundError, ValueError) as exc:
                     folder_status = str(exc)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_c:
+                try:
+                    scene_path, score = evaluate_selected_gaussian_scene(selected_folder)
+                    folder_status = f"Konzisztencia: {score:.3f} ({scene_path.name})"
+                except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                    folder_status = str(exc)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_i:
+                try:
+                    scene_path, previous_score, improved_score = improve_selected_gaussian_scene(selected_folder)
+                    folder_status = (
+                        f"Javítás: {previous_score:.3f} → {improved_score:.3f} "
+                        f"({scene_path.name})"
+                    )
+                except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                    folder_status = str(exc)
             if event.type == pygame.MOUSEMOTION:
                 dmx, dmy = event.rel
 
@@ -641,7 +700,7 @@ def main() -> None:
             True, (255, 240, 80),
         )
         hud_bot = font_s.render(
-            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  Shift: gyors  |  O: mappa megnyitása  |  ESC: kilépés",
+            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  Shift: gyors  |  O: mappa  |  C: konziszt.  |  I: javít",
             True, (170, 170, 170),
         )
         hud_folder = font_s.render(folder_status, True, (150, 220, 255))
