@@ -21,6 +21,7 @@ Vezérlők:
   I              – jelenet javítása
   +/-            – javítás sebességének állítása
   F              – folyamatos javítás be/ki
+  N              – új random Gaussian-folt hozzáadása
   R              – meglévő Gaussian-foltok randomizálása és mentése
   Shift          – gyors mozgás (3×)
   ESC            – kilépés
@@ -72,6 +73,7 @@ RANDOMIZED_OPACITY_MAX = 1.0
 DEFAULT_IMPROVE_STEP_SIZE = 1.0
 IMPROVE_STEP_SIZE_DELTA = 0.1
 CONTINUOUS_IMPROVE_INTERVAL_SECONDS = 0.2
+MAX_RANDOM_GAUSSIAN_SUFFIX = 10_000
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -191,6 +193,54 @@ def _wrap_degrees(angle: float) -> float:
 def _clamp_improve_step_size(step_size: float) -> float:
     """A javítás lépésközét a [0, 1] tartományban tartja."""
     return float(np.clip(step_size, 0.0, 1.0))
+
+
+def _build_random_gaussian_entry(random_generator: np.random.Generator, source_image: str) -> dict:
+    """Létrehoz egy új random Gaussian-bejegyzést."""
+    rotation = random_generator.normal(size=4).astype(np.float64)
+    rotation_norm = float(np.linalg.norm(rotation))
+    if rotation_norm < 1e-10:
+        rotation_values = [1.0, 0.0, 0.0, 0.0]
+    else:
+        rotation_values = (rotation / rotation_norm).tolist()
+
+    return {
+        "source_image": source_image,
+        "position": random_generator.uniform(
+            -GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
+            GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
+            size=3,
+        ).astype(np.float64).tolist(),
+        "scale": random_generator.uniform(
+            RANDOMIZED_SCALE_MIN,
+            RANDOMIZED_SCALE_MAX,
+            size=3,
+        ).astype(np.float64).tolist(),
+        "rotation": rotation_values,
+        "color": random_generator.uniform(0.0, 1.0, size=3).astype(np.float64).tolist(),
+        "opacity": float(random_generator.uniform(RANDOMIZED_OPACITY_MIN, RANDOMIZED_OPACITY_MAX)),
+    }
+
+
+def _next_random_gaussian_source_name(scene_data: dict, prefix: str = "random_added") -> str:
+    """Egyedi source_image nevet készít az új random Gaussianhoz."""
+    image_extension = ".bmp"
+    images = scene_data.get("images", [])
+    if images:
+        image_name = str(images[0].get("file", ""))
+        if image_name:
+            image_extension = Path(image_name).suffix or image_extension
+
+    used_names = {
+        gaussian.get("source_image")
+        for gaussian in scene_data.get("gaussians", [])
+        if gaussian.get("source_image")
+    }
+    for suffix in range(1, MAX_RANDOM_GAUSSIAN_SUFFIX):
+        candidate = f"{prefix}_{suffix:03d}{image_extension}"
+        if candidate not in used_names:
+            return candidate
+    raise ValueError("Nem sikerült egyedi nevet készíteni az új random Gaussianhoz.")
 
 
 def _build_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> dict:
@@ -446,28 +496,38 @@ def randomize_gaussian_scene(
     random_generator = np.random.default_rng(seed)
 
     for gaussian in gaussians:
-        gaussian["position"] = random_generator.uniform(
-            -GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
-            GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
-            size=3,
-        ).astype(np.float64).tolist()
-        gaussian["scale"] = random_generator.uniform(
-            RANDOMIZED_SCALE_MIN,
-            RANDOMIZED_SCALE_MAX,
-            size=3,
-        ).astype(np.float64).tolist()
-        rotation = random_generator.normal(size=4).astype(np.float64)
-        rotation_norm = float(np.linalg.norm(rotation))
-        if rotation_norm < 1e-10:
-            gaussian["rotation"] = [1.0, 0.0, 0.0, 0.0]
-        else:
-            gaussian["rotation"] = (rotation / rotation_norm).tolist()
-        gaussian["color"] = random_generator.uniform(0.0, 1.0, size=3).astype(np.float64).tolist()
-        gaussian["opacity"] = float(random_generator.uniform(RANDOMIZED_OPACITY_MIN, RANDOMIZED_OPACITY_MAX))
+        random_gaussian = _build_random_gaussian_entry(
+            random_generator,
+            gaussian.get("source_image", _next_random_gaussian_source_name(randomized_scene)),
+        )
+        gaussian["position"] = random_gaussian["position"]
+        gaussian["scale"] = random_gaussian["scale"]
+        gaussian["rotation"] = random_gaussian["rotation"]
+        gaussian["color"] = random_gaussian["color"]
+        gaussian["opacity"] = random_gaussian["opacity"]
 
     randomized_scene["folder"] = str(folder)
     randomized_scene["consistency_score"] = evaluate_gaussian_scene_consistency(randomized_scene, folder)
     return randomized_scene
+
+
+def append_random_gaussian_scene(
+    scene_data: dict,
+    folder_path: str | Path | None = None,
+    seed: int | None = None,
+) -> dict:
+    """Hozzáad egy új random Gaussian-bejegyzést, majd újrapontozza a jelenetet."""
+    folder = Path(folder_path or scene_data.get("folder", ".")).expanduser().resolve()
+    expanded_scene = copy.deepcopy(scene_data)
+    gaussians = expanded_scene.setdefault("gaussians", [])
+    random_generator = np.random.default_rng(seed)
+    gaussians.append(_build_random_gaussian_entry(
+        random_generator,
+        _next_random_gaussian_source_name(expanded_scene),
+    ))
+    expanded_scene["folder"] = str(folder)
+    expanded_scene["consistency_score"] = evaluate_gaussian_scene_consistency(expanded_scene, folder)
+    return expanded_scene
 
 
 def evaluate_selected_gaussian_scene(
@@ -507,6 +567,20 @@ def randomize_selected_gaussian_scene(
     scene_path.write_text(json.dumps(randomized_scene, indent=2), encoding="utf-8")
     randomized_score = float(randomized_scene.get("consistency_score", previous_score))
     return scene_path, previous_score, randomized_score
+
+
+def append_random_gaussian_selected_scene(
+    folder_path: str | Path | None,
+    scene_filename: str = DEFAULT_SCENE_FILENAME,
+    seed: int | None = None,
+) -> tuple[Path, float, float]:
+    """Hozzáad egy új random Gaussian-bejegyzést, elmenti, és visszaadja az előtte/utána pontszámot."""
+    scene_path, scene_data = load_gaussian_scene_file(folder_path, scene_filename)
+    previous_score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
+    expanded_scene = append_random_gaussian_scene(scene_data, folder_path, seed=seed)
+    scene_path.write_text(json.dumps(expanded_scene, indent=2), encoding="utf-8")
+    expanded_score = float(expanded_scene.get("consistency_score", previous_score))
+    return scene_path, previous_score, expanded_score
 
 
 def _scene_data_to_gaussians(scene_data: dict) -> list[Gaussian3D]:
@@ -880,6 +954,17 @@ def main() -> None:
                     )
                 except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
                     folder_status = str(exc)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_n:
+                try:
+                    scene_path, previous_score, expanded_score = append_random_gaussian_selected_scene(selected_folder)
+                    _, expanded_scene_data = load_gaussian_scene_file(selected_folder)
+                    active_scene = _scene_data_to_gaussians(expanded_scene_data)
+                    folder_status = (
+                        f"Új random Gaussian: {previous_score:.3f} → {expanded_score:.3f} "
+                        f"({scene_path.name}, {len(expanded_scene_data.get('gaussians', []))} Gaussian)"
+                    )
+                except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                    folder_status = str(exc)
             if event.type == pygame.MOUSEMOTION:
                 dmx, dmy = event.rel
 
@@ -925,7 +1010,7 @@ def main() -> None:
             (
                 "WASD/Nyilak  |  Q/E: le/fel  |  Egér  |  Shift  |  O: mappa  |  "
                 f"C: konsziszt.  |  I: javít  |  +/-: seb. {improve_step_size:.2f}  |  "
-                f"F: {'BE' if continuous_improve_enabled else 'KI'}  |  R: random"
+                f"F: {'BE' if continuous_improve_enabled else 'KI'}  |  R: random  |  N: új random"
             ),
             True, (170, 170, 170),
         )
