@@ -342,6 +342,74 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertAlmostEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
             self.assertAlmostEqual(improved_scene["gaussians"][0]["color"][0], 1.0, places=4)
 
+    def test_improve_gaussian_scene_consistency_step_size_zero_keeps_scene_values(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["images"][1]["camera_angles"]["pitch_deg"] = 30.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            degraded_scene["gaussians"][1]["scale"] = [1.5, 1.5, 1.5]
+
+            unchanged_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.0)
+
+            self.assertEqual(unchanged_scene["images"], degraded_scene["images"])
+            self.assertEqual(unchanged_scene["gaussians"], degraded_scene["gaussians"])
+            self.assertAlmostEqual(
+                unchanged_scene["consistency_score"],
+                evaluate_gaussian_scene_consistency(degraded_scene, folder),
+            )
+
+    def test_improve_gaussian_scene_consistency_larger_step_size_improves_more(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+
+            slower_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.25)
+            faster_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.75)
+
+            self.assertGreater(faster_scene["consistency_score"], slower_scene["consistency_score"])
+            self.assertLess(
+                abs(slower_scene["images"][0]["camera_angles"]["yaw_deg"]),
+                abs(degraded_scene["images"][0]["camera_angles"]["yaw_deg"]),
+            )
+            self.assertLess(
+                abs(faster_scene["images"][0]["camera_angles"]["yaw_deg"]),
+                abs(slower_scene["images"][0]["camera_angles"]["yaw_deg"]),
+            )
+
+    def test_repeated_small_improve_steps_continue_to_raise_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            scene_path.write_text(json.dumps(degraded_scene, indent=2), encoding="utf-8")
+
+            _, first_previous_score, first_score = improve_selected_gaussian_scene(folder, step_size=0.2)
+            _, second_previous_score, second_score = improve_selected_gaussian_scene(folder, step_size=0.2)
+
+            self.assertGreater(first_score, first_previous_score)
+            self.assertAlmostEqual(second_previous_score, first_score)
+            self.assertGreater(second_score, first_score)
+
     def test_randomize_gaussian_scene_randomizes_existing_gaussians_and_preserves_images(self):
         with TemporaryDirectory() as temp_dir:
             folder = Path(temp_dir)

@@ -19,6 +19,8 @@ Vezérlők:
   O              – használandó mappa kiválasztása
   C              – jelenet konzisztencia kiértékelése
   I              – jelenet javítása
+  +/-            – javítás sebességének állítása
+  F              – folyamatos javítás be/ki
   R              – meglévő Gaussian-foltok randomizálása és mentése
   Shift          – gyors mozgás (3×)
   ESC            – kilépés
@@ -67,6 +69,9 @@ RANDOMIZED_SCALE_MIN = 0.05
 RANDOMIZED_SCALE_MAX = 1.25
 RANDOMIZED_OPACITY_MIN = 0.1
 RANDOMIZED_OPACITY_MAX = 1.0
+DEFAULT_IMPROVE_STEP_SIZE = 1.0
+IMPROVE_STEP_SIZE_DELTA = 0.1
+CONTINUOUS_IMPROVE_INTERVAL_SECONDS = 0.2
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -181,6 +186,11 @@ def _target_opacity_from_stats(stats: dict) -> float:
 def _wrap_degrees(angle: float) -> float:
     """Egy szöget a [-180, 180) tartományba normalizál."""
     return float(((angle + 180.0) % 360.0) - 180.0)
+
+
+def _clamp_improve_step_size(step_size: float) -> float:
+    """A javítás lépésközét a [0, 1] tartományban tartja."""
+    return float(np.clip(step_size, 0.0, 1.0))
 
 
 def _build_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> dict:
@@ -374,7 +384,7 @@ def improve_gaussian_scene_consistency(
         if gaussian.get("source_image")
     }
 
-    step_size = float(np.clip(step_size, 0.0, 1.0))
+    step_size = _clamp_improve_step_size(step_size)
     new_gaussians = []
 
     for index, image_entry in enumerate(images):
@@ -473,10 +483,11 @@ def evaluate_selected_gaussian_scene(
 def improve_selected_gaussian_scene(
     folder_path: str | Path | None,
     scene_filename: str = DEFAULT_SCENE_FILENAME,
-    step_size: float = 1.0,
+    step_size: float = DEFAULT_IMPROVE_STEP_SIZE,
 ) -> tuple[Path, float, float]:
     """Javítja a kiválasztott jelenetet, elmenti, és visszaadja az előtte/utána pontszámot."""
     scene_path, scene_data = load_gaussian_scene_file(folder_path, scene_filename)
+    step_size = _clamp_improve_step_size(step_size)
     previous_score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
     improved_scene = improve_gaussian_scene_consistency(scene_data, folder_path, step_size=step_size)
     scene_path.write_text(json.dumps(improved_scene, indent=2), encoding="utf-8")
@@ -782,6 +793,9 @@ def main() -> None:
     selected_folder: Path | None = None
     active_scene = list(SCENE)
     folder_status = "Nincs kijelölt mappa"
+    improve_step_size = DEFAULT_IMPROVE_STEP_SIZE
+    continuous_improve_enabled = False
+    continuous_improve_elapsed = 0.0
 
     while True:
         dt   = clock.tick(60) / 1000.0
@@ -802,6 +816,8 @@ def main() -> None:
                         folder_status = "Mappaválasztás megszakítva"
                     else:
                         image_count = len(open_image_folder(chosen_folder))
+                        continuous_improve_enabled = False
+                        continuous_improve_elapsed = 0.0
                         selected_folder = chosen_folder
                         try:
                             _, scene_data = load_gaussian_scene_file(selected_folder)
@@ -818,6 +834,19 @@ def main() -> None:
                             )
                 except (RuntimeError, FileNotFoundError, ValueError) as exc:
                     folder_status = str(exc)
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                improve_step_size = _clamp_improve_step_size(improve_step_size - IMPROVE_STEP_SIZE_DELTA)
+                folder_status = f"Javítási sebesség: {improve_step_size:.2f}"
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):
+                improve_step_size = _clamp_improve_step_size(improve_step_size + IMPROVE_STEP_SIZE_DELTA)
+                folder_status = f"Javítási sebesség: {improve_step_size:.2f}"
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_f:
+                continuous_improve_enabled = not continuous_improve_enabled
+                continuous_improve_elapsed = 0.0
+                folder_status = (
+                    f"Folyamatos javítás: {'BE' if continuous_improve_enabled else 'KI'} "
+                    f"(sebesség: {improve_step_size:.2f})"
+                )
             if event.type == pygame.KEYDOWN and event.key == pygame.K_c:
                 try:
                     scene_path, scene_data = load_gaussian_scene_file(selected_folder)
@@ -828,11 +857,14 @@ def main() -> None:
                     folder_status = str(exc)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_i:
                 try:
-                    scene_path, previous_score, improved_score = improve_selected_gaussian_scene(selected_folder)
+                    scene_path, previous_score, improved_score = improve_selected_gaussian_scene(
+                        selected_folder,
+                        step_size=improve_step_size,
+                    )
                     _, improved_scene_data = load_gaussian_scene_file(selected_folder)
                     active_scene = _scene_data_to_gaussians(improved_scene_data)
                     folder_status = (
-                        f"Javítás: {previous_score:.3f} → {improved_score:.3f} "
+                        f"Javítás ({improve_step_size:.2f}): {previous_score:.3f} → {improved_score:.3f} "
                         f"({scene_path.name})"
                     )
                 except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
@@ -852,6 +884,24 @@ def main() -> None:
                 dmx, dmy = event.rel
 
         cam.update(pygame.key.get_pressed(), dt, dmx, dmy)
+        if continuous_improve_enabled:
+            continuous_improve_elapsed += dt
+            if continuous_improve_elapsed >= CONTINUOUS_IMPROVE_INTERVAL_SECONDS:
+                continuous_improve_elapsed = 0.0
+                try:
+                    scene_path, previous_score, improved_score = improve_selected_gaussian_scene(
+                        selected_folder,
+                        step_size=improve_step_size,
+                    )
+                    _, improved_scene_data = load_gaussian_scene_file(selected_folder)
+                    active_scene = _scene_data_to_gaussians(improved_scene_data)
+                    folder_status = (
+                        f"Folyamatos javítás ({improve_step_size:.2f}): "
+                        f"{previous_score:.3f} → {improved_score:.3f} ({scene_path.name})"
+                    )
+                except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                    folder_status = str(exc)
+                    continuous_improve_enabled = False
 
         # ── Renderelés ─────────────────────────────────────────────
         fb = np.zeros((HEIGHT, WIDTH, 3), dtype=np.float32)
@@ -872,7 +922,11 @@ def main() -> None:
             True, (255, 240, 80),
         )
         hud_bot = font_s.render(
-            "WASD/Nyilak  |  Q/E: le/fel  |  Egér  |  Shift  |  O: mappa  |  C: konsziszt.  |  I: javít  |  R: random",
+            (
+                "WASD/Nyilak  |  Q/E: le/fel  |  Egér  |  Shift  |  O: mappa  |  "
+                f"C: konsziszt.  |  I: javít  |  +/-: seb. {improve_step_size:.2f}  |  "
+                f"F: {'BE' if continuous_improve_enabled else 'KI'}  |  R: random"
+            ),
             True, (170, 170, 170),
         )
         hud_folder = font_s.render(folder_status, True, (150, 220, 255))
