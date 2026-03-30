@@ -122,8 +122,10 @@ class GaussianViewerTests(unittest.TestCase):
             (folder / "notes.txt").write_text("ignore", encoding="utf-8")
 
             image_paths = open_image_folder(folder)
+            loaded_surface = pygame.image.load(str(image_paths[0]))
 
             self.assertEqual([path.name for path in image_paths], ["a.bmp", "b.bmp"])
+            self.assertEqual(loaded_surface.get_size(), (4, 2))
 
     def test_create_gaussian_scene_file_writes_camera_angles_and_gaussians(self):
         with TemporaryDirectory() as temp_dir:
@@ -143,23 +145,37 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertAlmostEqual(scene["gaussians"][1]["color"][0], 1.0, places=4)
 
     def test_select_working_folder_returns_selected_path(self):
-        initial_dir = Path("/tmp")
-        selected_path = Path("/home/runner/work")
-        seen_initial_dirs = []
+        with TemporaryDirectory() as selected_dir:
+            initial_path = Path("non-existent-initial-dir")
+            selected_path = Path(selected_dir)
+            seen_initial_dirs = []
 
-        def dialog_opener(passed_initial_dir):
-            seen_initial_dirs.append(passed_initial_dir)
-            return str(selected_path)
+            def dialog_opener(passed_initial_dir):
+                seen_initial_dirs.append(passed_initial_dir)
+                return str(selected_path)
 
-        result = select_working_folder(initial_dir=initial_dir, dialog_opener=dialog_opener)
+            result = select_working_folder(initial_dir=initial_path, dialog_opener=dialog_opener)
 
-        self.assertEqual(result, selected_path.resolve())
-        self.assertEqual(seen_initial_dirs, [initial_dir])
+            self.assertEqual(result, selected_path.resolve())
+            self.assertEqual(seen_initial_dirs, [None])
 
     def test_select_working_folder_returns_none_when_cancelled(self):
         result = select_working_folder(dialog_opener=lambda _initial_dir: "")
 
         self.assertIsNone(result)
+
+    def test_select_working_folder_passes_existing_initial_dir_to_dialog(self):
+        with TemporaryDirectory() as initial_dir:
+            initial_path = Path(initial_dir)
+            seen_initial_dirs = []
+
+            def dialog_opener(passed_initial_dir):
+                seen_initial_dirs.append(passed_initial_dir)
+                return ""
+
+            select_working_folder(initial_dir=initial_path, dialog_opener=dialog_opener)
+
+            self.assertEqual(seen_initial_dirs, [initial_path.resolve()])
 
     def test_evaluate_and_improve_gaussian_scene_consistency(self):
         with TemporaryDirectory() as temp_dir:
@@ -186,6 +202,8 @@ class GaussianViewerTests(unittest.TestCase):
 
             self.assertGreater(improved_score, degraded_score)
             self.assertAlmostEqual(improved_score, good_score, places=4)
+            self.assertEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            np.testing.assert_allclose(improved_scene["gaussians"][0]["color"], scene["gaussians"][0]["color"], atol=1e-6)
 
 
 if __name__ == "__main__":

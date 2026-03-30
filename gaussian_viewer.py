@@ -16,6 +16,7 @@ Vezérlők:
   WASD / Nyilak  – előre/hátra/balra/jobbra mozgás
   Q / E          – lejjebb / feljebb mozgás
   Egér           – nézési irány
+  O              – használandó mappa kiválasztása
   Shift          – gyors mozgás (3×)
   ESC            – kilépés
 """
@@ -47,6 +48,9 @@ OPACITY_ERROR_WEIGHT = 0.8
 YAW_ERROR_WEIGHT = 0.4
 PITCH_ERROR_WEIGHT = 0.2
 ROLL_ERROR_WEIGHT = 0.1
+MAX_YAW_DEVIATION_DEG = 180.0
+MAX_PITCH_DEVIATION_DEG = 90.0
+MAX_ROLL_DEVIATION_DEG = 180.0
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -74,29 +78,41 @@ def open_image_folder(folder_path: str | Path) -> list[Path]:
     return images
 
 
+def _resolve_existing_directory(folder_path: str | Path | None) -> Path | None:
+    """Felold egy opcionális mappaútvonalat, és csak létező könyvtár esetén adja vissza."""
+    if not folder_path:
+        return None
+
+    resolved = Path(folder_path).expanduser().resolve()
+    return resolved if resolved.is_dir() else None
+
+
 def select_working_folder(
     initial_dir: str | Path | None = None,
     dialog_opener=None,
-    tk_factory=None,
 ) -> Path | None:
-    """Megnyit egy mappaválasztó ablakot, és visszaadja a kijelölt mappát."""
+    """
+    Megnyit egy mappaválasztó ablakot, és visszaadja a kijelölt mappát.
+
+    A `dialog_opener` paraméter teszteléshez injektálható.
+    """
+    resolved_initial_dir = _resolve_existing_directory(initial_dir)
     if dialog_opener is not None:
-        selected = dialog_opener(initial_dir)
+        selected = dialog_opener(resolved_initial_dir)
         return Path(selected).expanduser().resolve() if selected else None
 
     try:
         import tkinter as tk
         from tkinter import filedialog
-    except Exception as exc:
+    except (ImportError, ModuleNotFoundError) as exc:
         raise RuntimeError("A mappaválasztó párbeszédablak nem érhető el.") from exc
 
-    tk_factory = tk_factory or tk.Tk
-    root = tk_factory()
+    root = tk.Tk()
     root.withdraw()
     root.update()
     try:
         selected = filedialog.askdirectory(
-            initialdir=str(Path(initial_dir).expanduser().resolve()) if initial_dir else None,
+            initialdir=str(resolved_initial_dir) if resolved_initial_dir else None,
             title="Válaszd ki a használandó mappát",
         )
     finally:
@@ -107,6 +123,7 @@ def select_working_folder(
 
 
 def _load_image_statistics(image_path: str | Path) -> dict:
+    """Betölti a képet, és visszaadja a méretét, átlagos színét, fényerejét és kontrasztját."""
     surface = pygame.image.load(str(image_path))
     width, height = surface.get_size()
     pixels = pygame.surfarray.array3d(surface).astype(np.float32)
@@ -144,10 +161,12 @@ def _target_opacity_from_stats(stats: dict) -> float:
 
 
 def _wrap_degrees(angle: float) -> float:
+    """Egy szöget a [-180, 180] tartományba normalizál."""
     return float(((angle + 180.0) % 360.0) - 180.0)
 
 
 def _build_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> dict:
+    """Létrehoz egy Gaussian-spot leírást a képnévhez, kameraálláshoz és képi statisztikákhoz."""
     yaw_rad = math.radians(camera_angles["yaw_deg"])
     pitch_rad = math.radians(camera_angles["pitch_deg"])
     position = np.array([
@@ -228,9 +247,9 @@ def evaluate_gaussian_scene_consistency(scene_data: dict, folder_path: str | Pat
         target_opacity = _target_opacity_from_stats(stats)
 
         camera_angles = image_entry.get("camera_angles", {})
-        yaw_error = abs(_wrap_degrees(float(camera_angles.get("yaw_deg", 0.0)) - target_yaw)) / 180.0
-        pitch_error = abs(float(camera_angles.get("pitch_deg", 0.0))) / 90.0
-        roll_error = abs(float(camera_angles.get("roll_deg", 0.0))) / 180.0
+        yaw_error = abs(_wrap_degrees(float(camera_angles.get("yaw_deg", 0.0)) - target_yaw)) / MAX_YAW_DEVIATION_DEG
+        pitch_error = abs(float(camera_angles.get("pitch_deg", 0.0))) / MAX_PITCH_DEVIATION_DEG
+        roll_error = abs(float(camera_angles.get("roll_deg", 0.0))) / MAX_ROLL_DEVIATION_DEG
         color_error = float(np.mean(np.abs(np.asarray(gaussian["color"], dtype=np.float64) - stats["mean_color"])))
         scale_error = float(np.mean(np.abs(np.asarray(gaussian["scale"], dtype=np.float64) - target_scale)))
         opacity_error = abs(float(gaussian["opacity"]) - target_opacity)
@@ -622,7 +641,7 @@ def main() -> None:
             True, (255, 240, 80),
         )
         hud_bot = font_s.render(
-            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  O: mappa megnyitása  |  ESC: kilépés",
+            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  Shift: gyors  |  O: mappa megnyitása  |  ESC: kilépés",
             True, (170, 170, 170),
         )
         hud_folder = font_s.render(folder_status, True, (150, 220, 255))
