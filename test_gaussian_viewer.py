@@ -1,14 +1,44 @@
+import json
 import unittest
 from collections import defaultdict
+from copy import deepcopy
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 import pygame
 
-from gaussian_viewer import Camera, Gaussian3D, HEIGHT, MOUSE_SENS, WIDTH, project_gaussians, render
+from gaussian_viewer import (
+    Camera,
+    DEFAULT_SCENE_FILENAME,
+    Gaussian3D,
+    HEIGHT,
+    MOUSE_SENS,
+    WIDTH,
+    create_gaussian_scene_file,
+    evaluate_gaussian_scene_consistency,
+    improve_gaussian_scene_consistency,
+    open_image_folder,
+    project_gaussians,
+    render,
+)
 
 
 class GaussianViewerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        pygame.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        pygame.quit()
+
+    def _create_test_image(self, path: Path, color: tuple[int, int, int], size: tuple[int, int] = (4, 2)) -> None:
+        surface = pygame.Surface(size)
+        surface.fill(color)
+        pygame.image.save(surface, str(path))
+
     @patch("pygame.key.get_mods", return_value=0)
     def test_camera_update_inverts_vertical_mouse_rotation(self, _get_mods):
         cam = Camera(pitch=10.0)
@@ -82,6 +112,60 @@ class GaussianViewerTests(unittest.TestCase):
 
         center = fb[HEIGHT // 2, WIDTH // 2]
         np.testing.assert_allclose(center, np.array([0.5, 0.0, 0.4]), atol=1e-6)
+
+    def test_open_image_folder_lists_supported_images(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "b.bmp", (255, 0, 0))
+            self._create_test_image(folder / "a.bmp", (0, 255, 0))
+            (folder / "notes.txt").write_text("ignore", encoding="utf-8")
+
+            image_paths = open_image_folder(folder)
+
+            self.assertEqual([path.name for path in image_paths], ["a.bmp", "b.bmp"])
+
+    def test_create_gaussian_scene_file_writes_camera_angles_and_gaussians(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "front.bmp", (255, 0, 0), size=(4, 2))
+            self._create_test_image(folder / "back.bmp", (0, 0, 255), size=(2, 4))
+
+            scene_path = create_gaussian_scene_file(folder)
+
+            self.assertEqual(scene_path, folder / DEFAULT_SCENE_FILENAME)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual([image["file"] for image in scene["images"]], ["back.bmp", "front.bmp"])
+            self.assertEqual(scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            self.assertEqual(scene["images"][1]["camera_angles"]["yaw_deg"], 180.0)
+            self.assertEqual(len(scene["gaussians"]), 2)
+            self.assertEqual(scene["gaussians"][0]["source_image"], "back.bmp")
+            self.assertAlmostEqual(scene["gaussians"][1]["color"][0], 1.0, places=4)
+
+    def test_evaluate_and_improve_gaussian_scene_consistency(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            good_score = evaluate_gaussian_scene_consistency(scene, folder)
+
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["images"][1]["camera_angles"]["pitch_deg"] = 30.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            degraded_scene["gaussians"][0]["opacity"] = 0.1
+            degraded_scene["gaussians"][1]["scale"] = [1.5, 1.5, 1.5]
+            degraded_score = evaluate_gaussian_scene_consistency(degraded_scene, folder)
+
+            self.assertLess(degraded_score, good_score)
+
+            improved_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=1.0)
+            improved_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
+
+            self.assertGreater(improved_score, degraded_score)
+            self.assertAlmostEqual(improved_score, good_score, places=4)
 
 
 if __name__ == "__main__":

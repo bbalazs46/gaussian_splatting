@@ -1,1 +1,10 @@
 # gaussian_splatting
+
+Az alkalmazás jelenleg tartalmaz egy egyszerű képmappa-alapú Gaussian Splatting előkészítő workflow-t is:
+
+- `open_image_folder(folder_path)`: támogatott képek összegyűjtése egy mappából
+- `create_gaussian_scene_file(folder_path)`: létrehoz egy `gaussian_scene.json` fájlt a mappában
+- `evaluate_gaussian_scene_consistency(scene_data, folder_path=None)`: 0..1 közötti konzisztencia pontszámot ad
+- `improve_gaussian_scene_consistency(scene_data, folder_path=None, step_size=0.5)`: javítja a jelenet pontszámát
+
+A létrehozott JSON fájl az egyes képekhez becsült kamera-szögeket és a hozzájuk tartozó gauss-foltok adatait tárolja.

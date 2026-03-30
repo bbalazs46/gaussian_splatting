@@ -20,11 +20,14 @@ Vezérlők:
   ESC            – kilépés
 """
 
+import copy
+import json
 import sys
 import math
 import numpy as np
 import pygame
 from dataclasses import dataclass
+from pathlib import Path
 
 # ── Ablak és renderelési paraméterek ──────────────────────────────────────────
 WIDTH, HEIGHT = 1280, 720
@@ -33,6 +36,8 @@ NEAR         = 0.1        # közeli vágósík
 MOVE_SPEED   = 3.0        # egység / másodperc
 MOUSE_SENS   = 0.15       # fok / pixel
 BG_COLOR     = (10, 10, 20)
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+DEFAULT_SCENE_FILENAME = "gaussian_scene.json"
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -43,6 +48,229 @@ class Gaussian3D:
     rotation: np.ndarray   # (4,)  kvaternió  [w, x, y, z]
     color:    np.ndarray   # (3,)  RGB  [0 .. 1]
     opacity:  float        # [0 .. 1]
+
+
+def open_image_folder(folder_path: str | Path) -> list[Path]:
+    """Kinyit egy képmappát, és visszaadja a támogatott képfájlokat."""
+    folder = Path(folder_path).expanduser().resolve()
+    if not folder.is_dir():
+        raise FileNotFoundError(f"A mappa nem található: {folder}")
+
+    images = sorted(
+        path for path in folder.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    if not images:
+        raise ValueError(f"A mappában nincs támogatott kép: {folder}")
+    return images
+
+
+def _load_image_statistics(image_path: str | Path) -> dict:
+    surface = pygame.image.load(str(image_path))
+    width, height = surface.get_size()
+    pixels = pygame.surfarray.array3d(surface).astype(np.float32)
+    mean_color = pixels.mean(axis=(0, 1)) / 255.0
+    brightness = float(mean_color.mean())
+    contrast = float(pixels.std() / 255.0)
+    return {
+        "width": int(width),
+        "height": int(height),
+        "mean_color": mean_color,
+        "brightness": brightness,
+        "contrast": contrast,
+    }
+
+
+def _expected_camera_yaw(index: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return float(index * 360.0 / total)
+
+
+def _target_scale_from_stats(stats: dict) -> np.ndarray:
+    max_dim = max(stats["width"], stats["height"], 1)
+    width_ratio = stats["width"] / max_dim
+    height_ratio = stats["height"] / max_dim
+    return np.array([
+        0.25 + width_ratio * 0.45,
+        0.25 + height_ratio * 0.45,
+        0.15 + min(stats["contrast"], 1.0) * 0.35,
+    ], dtype=np.float64)
+
+
+def _target_opacity_from_stats(stats: dict) -> float:
+    return float(np.clip(0.35 + stats["brightness"] * 0.65, 0.1, 1.0))
+
+
+def _wrap_degrees(angle: float) -> float:
+    return float(((angle + 180.0) % 360.0) - 180.0)
+
+
+def _build_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> dict:
+    yaw_rad = math.radians(camera_angles["yaw_deg"])
+    pitch_rad = math.radians(camera_angles["pitch_deg"])
+    radius = 1.5
+    position = np.array([
+        math.sin(yaw_rad) * radius,
+        math.sin(pitch_rad) * radius * 0.5,
+        math.cos(yaw_rad) * radius,
+    ], dtype=np.float64)
+    return {
+        "source_image": image_name,
+        "position": position.tolist(),
+        "scale": _target_scale_from_stats(stats).tolist(),
+        "rotation": [1.0, 0.0, 0.0, 0.0],
+        "color": stats["mean_color"].astype(np.float64).tolist(),
+        "opacity": _target_opacity_from_stats(stats),
+    }
+
+
+def build_gaussian_scene_data(folder_path: str | Path) -> dict:
+    """Egyszerű jelenetleírást készít a mappa képeihez becsült kameraállásokkal."""
+    image_paths = open_image_folder(folder_path)
+    scene = {
+        "folder": str(Path(folder_path).expanduser().resolve()),
+        "images": [],
+        "gaussians": [],
+    }
+
+    total = len(image_paths)
+    for index, image_path in enumerate(image_paths):
+        stats = _load_image_statistics(image_path)
+        camera_angles = {
+            "yaw_deg": _expected_camera_yaw(index, total),
+            "pitch_deg": 0.0,
+            "roll_deg": 0.0,
+        }
+        scene["images"].append({
+            "file": image_path.name,
+            "camera_angles": camera_angles,
+        })
+        scene["gaussians"].append(_build_gaussian_entry(image_path.name, camera_angles, stats))
+
+    return scene
+
+
+def create_gaussian_scene_file(folder_path: str | Path, output_filename: str = DEFAULT_SCENE_FILENAME) -> Path:
+    """Létrehozza a jelenetfájlt a kiválasztott képmappában."""
+    scene = build_gaussian_scene_data(folder_path)
+    scene_path = Path(folder_path).expanduser().resolve() / output_filename
+    scene_path.write_text(json.dumps(scene, indent=2), encoding="utf-8")
+    return scene_path
+
+
+def evaluate_gaussian_scene_consistency(scene_data: dict, folder_path: str | Path | None = None) -> float:
+    """
+    0..1 közötti pontszámmal becsüli, mennyire vannak összhangban
+    a kameraállások és a gauss-foltok a bemeneti képekkel.
+    """
+    images = list(scene_data.get("images", []))
+    if not images:
+        return 0.0
+
+    folder = Path(folder_path or scene_data.get("folder", ".")).expanduser().resolve()
+    gaussians_by_image = {
+        gaussian.get("source_image"): gaussian
+        for gaussian in scene_data.get("gaussians", [])
+        if gaussian.get("source_image")
+    }
+
+    total_score = 0.0
+    for index, image_entry in enumerate(images):
+        image_name = image_entry["file"]
+        gaussian = gaussians_by_image.get(image_name)
+        if gaussian is None:
+            continue
+
+        stats = _load_image_statistics(folder / image_name)
+        target_yaw = _expected_camera_yaw(index, len(images))
+        target_scale = _target_scale_from_stats(stats)
+        target_opacity = _target_opacity_from_stats(stats)
+
+        camera_angles = image_entry.get("camera_angles", {})
+        yaw_error = abs(_wrap_degrees(float(camera_angles.get("yaw_deg", 0.0)) - target_yaw)) / 180.0
+        pitch_error = abs(float(camera_angles.get("pitch_deg", 0.0))) / 90.0
+        roll_error = abs(float(camera_angles.get("roll_deg", 0.0))) / 180.0
+        color_error = float(np.mean(np.abs(np.asarray(gaussian["color"], dtype=np.float64) - stats["mean_color"])))
+        scale_error = float(np.mean(np.abs(np.asarray(gaussian["scale"], dtype=np.float64) - target_scale)))
+        opacity_error = abs(float(gaussian["opacity"]) - target_opacity)
+
+        penalty = (
+            color_error * 1.8 +
+            scale_error * 1.0 +
+            opacity_error * 0.8 +
+            yaw_error * 0.4 +
+            pitch_error * 0.2 +
+            roll_error * 0.1
+        )
+        total_score += max(0.0, 1.0 - min(penalty, 1.0))
+
+    return total_score / len(images)
+
+
+def improve_gaussian_scene_consistency(
+    scene_data: dict,
+    folder_path: str | Path | None = None,
+    step_size: float = 0.5,
+) -> dict:
+    """A jelenetleírást a képek statisztikái felé tolja, hogy javuljon a pontszám."""
+    folder = Path(folder_path or scene_data.get("folder", ".")).expanduser().resolve()
+    improved_scene = copy.deepcopy(scene_data)
+    images = improved_scene.setdefault("images", [])
+    gaussians = improved_scene.setdefault("gaussians", [])
+    gaussians_by_image = {
+        gaussian.get("source_image"): gaussian
+        for gaussian in gaussians
+        if gaussian.get("source_image")
+    }
+
+    step_size = float(np.clip(step_size, 0.0, 1.0))
+    new_gaussians = []
+
+    for index, image_entry in enumerate(images):
+        image_name = image_entry["file"]
+        target_yaw = _expected_camera_yaw(index, len(images))
+        stats = _load_image_statistics(folder / image_name)
+        target_camera = {
+            "yaw_deg": target_yaw,
+            "pitch_deg": 0.0,
+            "roll_deg": 0.0,
+        }
+        camera_angles = image_entry.setdefault("camera_angles", target_camera.copy())
+        camera_angles["yaw_deg"] = float(camera_angles.get("yaw_deg", target_yaw) + (target_yaw - float(camera_angles.get("yaw_deg", target_yaw))) * step_size)
+        camera_angles["pitch_deg"] = float(camera_angles.get("pitch_deg", 0.0) * (1.0 - step_size))
+        camera_angles["roll_deg"] = float(camera_angles.get("roll_deg", 0.0) * (1.0 - step_size))
+
+        target_gaussian = _build_gaussian_entry(image_name, camera_angles, stats)
+        gaussian = gaussians_by_image.get(image_name)
+        if gaussian is None:
+            new_gaussians.append(target_gaussian)
+            continue
+
+        gaussian["source_image"] = image_name
+        gaussian["position"] = (
+            (1.0 - step_size) * np.asarray(gaussian.get("position", target_gaussian["position"]), dtype=np.float64) +
+            step_size * np.asarray(target_gaussian["position"], dtype=np.float64)
+        ).tolist()
+        gaussian["scale"] = (
+            (1.0 - step_size) * np.asarray(gaussian.get("scale", target_gaussian["scale"]), dtype=np.float64) +
+            step_size * np.asarray(target_gaussian["scale"], dtype=np.float64)
+        ).tolist()
+        gaussian["color"] = (
+            (1.0 - step_size) * np.asarray(gaussian.get("color", target_gaussian["color"]), dtype=np.float64) +
+            step_size * np.asarray(target_gaussian["color"], dtype=np.float64)
+        ).tolist()
+        gaussian["rotation"] = target_gaussian["rotation"]
+        gaussian["opacity"] = float(
+            (1.0 - step_size) * float(gaussian.get("opacity", target_gaussian["opacity"])) +
+            step_size * float(target_gaussian["opacity"])
+        )
+        new_gaussians.append(gaussian)
+
+    improved_scene["folder"] = str(folder)
+    improved_scene["gaussians"] = new_gaussians
+    improved_scene["consistency_score"] = evaluate_gaussian_scene_consistency(improved_scene, folder)
+    return improved_scene
 
 
 def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
