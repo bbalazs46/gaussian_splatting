@@ -442,6 +442,29 @@ def improve_selected_gaussian_scene(
     return scene_path, previous_score, improved_score
 
 
+def _scene_data_to_gaussians(scene_data: dict) -> list[Gaussian3D]:
+    """A jelenetfájl Gaussian-bejegyzéseit renderelhető Gaussian3D objektumokká alakítja."""
+    gaussians = []
+    for gaussian in scene_data.get("gaussians", []):
+        position = np.asarray(gaussian["position"], dtype=np.float64)
+        scale = np.asarray(gaussian["scale"], dtype=np.float64)
+        rotation = np.asarray(gaussian["rotation"], dtype=np.float64)
+        color = np.asarray(gaussian["color"], dtype=np.float64)
+
+        if position.shape != (3,) or scale.shape != (3,) or rotation.shape != (4,) or color.shape != (3,):
+            raise ValueError("A gaussian_scene.json egyik Gaussian-bejegyzése hibás alakú.")
+
+        gaussians.append(Gaussian3D(
+            position=position,
+            scale=np.clip(scale, 1e-3, None),
+            rotation=rotation,
+            color=np.clip(color, 0.0, 1.0),
+            opacity=float(np.clip(float(gaussian["opacity"]), 0.0, 1.0)),
+        ))
+
+    return gaussians
+
+
 def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
     """Egységkvaternióból 3×3 forgatási mátrix."""
     q = q / (np.linalg.norm(q) + 1e-12)
@@ -701,6 +724,7 @@ def main() -> None:
 
     cam = Camera(pos=[0.0, 0.0, 4.5])
     selected_folder: Path | None = None
+    active_scene = list(SCENE)
     folder_status = "Nincs kijelölt mappa"
 
     while True:
@@ -723,18 +747,34 @@ def main() -> None:
                     else:
                         image_count = len(open_image_folder(chosen_folder))
                         selected_folder = chosen_folder
-                        folder_status = f"Kijelölt mappa: {selected_folder.name} ({image_count} kép)"
+                        try:
+                            _, scene_data = load_gaussian_scene_file(selected_folder)
+                            active_scene = _scene_data_to_gaussians(scene_data)
+                            folder_status = (
+                                f"Kijelölt mappa: {selected_folder.name} "
+                                f"({image_count} kép, {len(active_scene)} Gaussian)"
+                            )
+                        except FileNotFoundError:
+                            active_scene = list(SCENE)
+                            folder_status = (
+                                f"Kijelölt mappa: {selected_folder.name} "
+                                f"({image_count} kép, nincs {DEFAULT_SCENE_FILENAME})"
+                            )
                 except (RuntimeError, FileNotFoundError, ValueError) as exc:
                     folder_status = str(exc)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_c:
                 try:
-                    scene_path, score = evaluate_selected_gaussian_scene(selected_folder)
+                    scene_path, scene_data = load_gaussian_scene_file(selected_folder)
+                    active_scene = _scene_data_to_gaussians(scene_data)
+                    score = evaluate_gaussian_scene_consistency(scene_data, selected_folder)
                     folder_status = f"Konzisztencia: {score:.3f} ({scene_path.name})"
                 except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
                     folder_status = str(exc)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_i:
                 try:
                     scene_path, previous_score, improved_score = improve_selected_gaussian_scene(selected_folder)
+                    _, improved_scene_data = load_gaussian_scene_file(selected_folder)
+                    active_scene = _scene_data_to_gaussians(improved_scene_data)
                     folder_status = (
                         f"Javítás: {previous_score:.3f} → {improved_score:.3f} "
                         f"({scene_path.name})"
@@ -748,7 +788,7 @@ def main() -> None:
 
         # ── Renderelés ─────────────────────────────────────────────
         fb = np.zeros((HEIGHT, WIDTH, 3), dtype=np.float32)
-        projected = project_gaussians(SCENE, cam)
+        projected = project_gaussians(active_scene, cam)
         render(projected, fb)
 
         # Float32 → uint8 → pygame Surface

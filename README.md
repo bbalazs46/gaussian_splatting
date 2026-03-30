@@ -9,4 +9,4 @@ Az alkalmazás jelenleg tartalmaz egy egyszerű képmappa-alapú Gaussian Splatt
 
 A létrehozott JSON fájl az egyes képekhez kezdeti, durva kamera- és Gaussian-becslést tárol. A `C` billentyű ezek konzisztenciáját méri, az `I` billentyű pedig a képek statisztikái felé javítja a jelenetet.
 
-A viewerben az `O` billentyűvel mappaválasztó ablak nyitható, amivel kijelölhető a használandó képmappa. A `C` billentyű kiértékeli a meglévő `gaussian_scene.json` konzisztenciáját, az `I` billentyű pedig javítja és elmenti a jelenetet.
+A viewerben az `O` billentyűvel mappaválasztó ablak nyitható, amivel kijelölhető a használandó képmappa. Ha a mappában van `gaussian_scene.json`, akkor a viewer ezt a Gaussian-jelenetet rendereli. A `C` billentyű ennek a jelenetnek a konzisztenciáját értékeli ki, az `I` billentyű pedig javítja és elmenti ugyanazt a jelenetet.

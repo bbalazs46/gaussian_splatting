@@ -18,6 +18,7 @@ from gaussian_viewer import (
     MOUSE_SENS,
     WIDTH,
     create_gaussian_scene_file,
+    _scene_data_to_gaussians,
     evaluate_gaussian_scene_consistency,
     evaluate_selected_gaussian_scene,
     improve_gaussian_scene_consistency,
@@ -148,6 +149,41 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertEqual(len(scene["gaussians"]), 2)
             self.assertEqual(scene["gaussians"][0]["source_image"], "back.bmp")
             self.assertLess(scene["gaussians"][1]["color"][0], 1.0)
+
+    def test_scene_data_to_gaussians_converts_scene_entries_for_rendering(self):
+        scene_data = {
+            "gaussians": [
+                {
+                    "position": [1, 2, 3],
+                    "scale": [0.0, 0.2, 0.3],
+                    "rotation": [1, 0, 0, 0],
+                    "color": [1.5, -0.5, 0.25],
+                    "opacity": 3.0,
+                }
+            ]
+        }
+
+        gaussians = _scene_data_to_gaussians(scene_data)
+
+        self.assertEqual(len(gaussians), 1)
+        np.testing.assert_allclose(gaussians[0].position, np.array([1.0, 2.0, 3.0]))
+        np.testing.assert_allclose(gaussians[0].scale, np.array([1e-3, 0.2, 0.3]))
+        np.testing.assert_allclose(gaussians[0].color, np.array([1.0, 0.0, 0.25]))
+        self.assertEqual(gaussians[0].opacity, 1.0)
+
+    def test_scene_data_to_gaussians_rejects_invalid_shapes(self):
+        with self.assertRaises(ValueError):
+            _scene_data_to_gaussians({
+                "gaussians": [
+                    {
+                        "position": [1, 2],
+                        "scale": [0.1, 0.2, 0.3],
+                        "rotation": [1, 0, 0, 0],
+                        "color": [0.1, 0.2, 0.3],
+                        "opacity": 0.5,
+                    }
+                ]
+            })
 
     def test_select_working_folder_returns_selected_path(self):
         with TemporaryDirectory() as selected_dir:
