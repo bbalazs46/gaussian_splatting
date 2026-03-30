@@ -1,14 +1,58 @@
+import json
+import random
 import unittest
 from collections import defaultdict
+from copy import deepcopy
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 import pygame
 
-from gaussian_viewer import Camera, Gaussian3D, HEIGHT, MOUSE_SENS, WIDTH, project_gaussians, render
+from gaussian_viewer import (
+    Camera,
+    DEFAULT_SCENE_FILENAME,
+    GAUSSIAN_CAMERA_RADIUS,
+    Gaussian3D,
+    HEIGHT,
+    MOUSE_SENS,
+    RANDOMIZED_POSITION_RANGE_FACTOR,
+    WIDTH,
+    _build_gaussian_entry,
+    _build_initial_gaussian_entry,
+    _load_image_statistics,
+    create_gaussian_scene_file,
+    _scene_data_to_gaussians,
+    append_random_gaussian_scene,
+    append_random_gaussian_selected_scene,
+    evaluate_gaussian_scene_consistency,
+    evaluate_selected_gaussian_scene,
+    improve_gaussian_scene_consistency,
+    improve_selected_gaussian_scene,
+    randomize_gaussian_scene,
+    randomize_selected_gaussian_scene,
+    open_image_folder,
+    project_gaussians,
+    render,
+    select_working_folder,
+)
 
 
 class GaussianViewerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        pygame.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        pygame.quit()
+
+    def _create_test_image(self, path: Path, color: tuple[int, int, int], size: tuple[int, int] = (4, 2)) -> None:
+        surface = pygame.Surface(size)
+        surface.fill(color)
+        pygame.image.save(surface, str(path))
+
     @patch("pygame.key.get_mods", return_value=0)
     def test_camera_update_inverts_vertical_mouse_rotation(self, _get_mods):
         cam = Camera(pitch=10.0)
@@ -82,6 +126,500 @@ class GaussianViewerTests(unittest.TestCase):
 
         center = fb[HEIGHT // 2, WIDTH // 2]
         np.testing.assert_allclose(center, np.array([0.5, 0.0, 0.4]), atol=1e-6)
+
+    def test_open_image_folder_lists_supported_images(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "b.bmp", (255, 0, 0))
+            self._create_test_image(folder / "a.bmp", (0, 255, 0))
+            (folder / "notes.txt").write_text("ignore", encoding="utf-8")
+
+            image_paths = open_image_folder(folder)
+            loaded_surface = pygame.image.load(str(image_paths[0]))
+
+            self.assertEqual([path.name for path in image_paths], ["a.bmp", "b.bmp"])
+            self.assertEqual(loaded_surface.get_size(), (4, 2))
+
+    def test_create_gaussian_scene_file_writes_camera_angles_and_gaussians(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "front.bmp", (255, 0, 0), size=(4, 2))
+            self._create_test_image(folder / "back.bmp", (0, 0, 255), size=(2, 4))
+
+            scene_path = create_gaussian_scene_file(folder)
+
+            self.assertEqual(scene_path, folder / DEFAULT_SCENE_FILENAME)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual([image["file"] for image in scene["images"]], ["back.bmp", "front.bmp"])
+            self.assertEqual(scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            self.assertEqual(scene["images"][0]["camera_angles"]["pitch_deg"], 0.0)
+            self.assertEqual(scene["images"][0]["camera_angles"]["roll_deg"], 0.0)
+            self.assertEqual(scene["images"][1]["camera_angles"]["yaw_deg"], 180.0)
+            self.assertEqual(len(scene["gaussians"]), 2)
+            self.assertEqual(scene["gaussians"][0]["source_image"], "back.bmp")
+            self.assertLess(scene["gaussians"][1]["color"][0], 1.0)
+
+    def test_scene_data_to_gaussians_converts_scene_entries_for_rendering(self):
+        scene_data = {
+            "gaussians": [
+                {
+                    "position": [1, 2, 3],
+                    "scale": [0.0, 0.2, 0.3],
+                    "rotation": [1, 0, 0, 0],
+                    "color": [1.5, -0.5, 0.25],
+                    "opacity": 3.0,
+                }
+            ]
+        }
+
+        gaussians = _scene_data_to_gaussians(scene_data)
+
+        self.assertEqual(len(gaussians), 1)
+        np.testing.assert_allclose(gaussians[0].position, np.array([1.0, 2.0, 3.0]))
+        np.testing.assert_allclose(gaussians[0].scale, np.array([1e-3, 0.2, 0.3]))
+        np.testing.assert_allclose(gaussians[0].color, np.array([1.0, 0.0, 0.25]))
+        self.assertEqual(gaussians[0].opacity, 1.0)
+
+    def test_scene_data_to_gaussians_rejects_invalid_shapes(self):
+        with self.assertRaises(ValueError):
+            _scene_data_to_gaussians({
+                "gaussians": [
+                    {
+                        "position": [1, 2],
+                        "scale": [0.1, 0.2, 0.3],
+                        "rotation": [1, 0, 0, 0],
+                        "color": [0.1, 0.2, 0.3],
+                        "opacity": 0.5,
+                    }
+                ]
+            })
+
+    def test_select_working_folder_returns_selected_path(self):
+        with TemporaryDirectory() as selected_dir:
+            initial_path = Path("non-existent-initial-dir")
+            selected_path = Path(selected_dir)
+            seen_initial_dirs = []
+
+            def dialog_opener(passed_initial_dir):
+                seen_initial_dirs.append(passed_initial_dir)
+                return str(selected_path)
+
+            result = select_working_folder(initial_dir=initial_path, dialog_opener=dialog_opener)
+
+            self.assertEqual(result, selected_path.resolve())
+            self.assertEqual(seen_initial_dirs, [None])
+
+    def test_select_working_folder_returns_none_when_cancelled(self):
+        result = select_working_folder(dialog_opener=lambda _initial_dir: "")
+
+        self.assertIsNone(result)
+
+    def test_select_working_folder_passes_existing_initial_dir_to_dialog(self):
+        with TemporaryDirectory() as initial_dir:
+            initial_path = Path(initial_dir)
+            seen_initial_dirs = []
+
+            def dialog_opener(passed_initial_dir):
+                seen_initial_dirs.append(passed_initial_dir)
+                return ""
+
+            select_working_folder(initial_dir=initial_path, dialog_opener=dialog_opener)
+
+            self.assertEqual(seen_initial_dirs, [initial_path.resolve()])
+
+    def test_evaluate_and_improve_gaussian_scene_consistency(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            initial_score = evaluate_gaussian_scene_consistency(scene, folder)
+            self.assertGreater(initial_score, 0.0)
+            self.assertLess(initial_score, 1.0)
+
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["images"][1]["camera_angles"]["pitch_deg"] = 30.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            degraded_scene["gaussians"][0]["opacity"] = 0.1
+            degraded_scene["gaussians"][1]["scale"] = [1.5, 1.5, 1.5]
+            degraded_score = evaluate_gaussian_scene_consistency(degraded_scene, folder)
+
+            self.assertLess(degraded_score, initial_score)
+
+            improved_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=1.0)
+            improved_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
+
+            self.assertGreater(improved_score, degraded_score)
+            self.assertGreater(improved_score, initial_score)
+            self.assertAlmostEqual(improved_score, 1.0, places=4)
+            self.assertEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            self.assertGreater(
+                improved_scene["gaussians"][0]["color"][0],
+                scene["gaussians"][0]["color"][0],
+            )
+
+    def test_evaluate_gaussian_scene_consistency_penalizes_position_and_rotation_errors(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            improved_scene = improve_gaussian_scene_consistency(scene, folder, step_size=1.0)
+            consistent_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
+
+            degraded_scene = deepcopy(improved_scene)
+            degraded_scene["gaussians"][0]["position"] = [99.0, 99.0, 99.0]
+            degraded_scene["gaussians"][1]["rotation"] = [0.0, 1.0, 0.0, 0.0]
+            degraded_score = evaluate_gaussian_scene_consistency(degraded_scene, folder)
+
+            self.assertAlmostEqual(consistent_score, 1.0, places=4)
+            self.assertLess(degraded_score, consistent_score)
+
+    def test_evaluate_gaussian_scene_consistency_penalizes_extra_random_gaussians(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            improved_scene = improve_gaussian_scene_consistency(scene, folder, step_size=1.0)
+            consistent_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
+
+            noisy_scene = deepcopy(improved_scene)
+            random_generator = random.Random(123)
+            for gaussian_index in range(5):
+                noisy_scene["gaussians"].append({
+                    "source_image": f"random_{gaussian_index}.bmp",
+                    "position": [random_generator.uniform(-50.0, 50.0) for _ in range(3)],
+                    "scale": [random_generator.uniform(0.1, 10.0) for _ in range(3)],
+                    "rotation": [random_generator.uniform(-2.0, 2.0) for _ in range(4)],
+                    "color": [random_generator.uniform(-1.0, 2.0) for _ in range(3)],
+                    "opacity": random_generator.uniform(-3.0, 3.0),
+                })
+            noisy_score = evaluate_gaussian_scene_consistency(noisy_scene, folder)
+
+            self.assertAlmostEqual(consistent_score, 1.0, places=4)
+            self.assertLess(noisy_score, consistent_score)
+            self.assertLess(noisy_score, 0.5)
+
+    def test_evaluate_selected_gaussian_scene_scores_existing_scene_file(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+            create_gaussian_scene_file(folder)
+
+            scene_path, score = evaluate_selected_gaussian_scene(folder)
+
+            self.assertEqual(scene_path, folder / DEFAULT_SCENE_FILENAME)
+            self.assertTrue(scene_path.exists())
+            self.assertGreater(score, 0.0)
+            self.assertLess(score, 1.0)
+
+    def test_evaluate_selected_gaussian_scene_requires_existing_scene_file(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+
+            with self.assertRaises(FileNotFoundError):
+                evaluate_selected_gaussian_scene(folder)
+
+    def test_improve_selected_gaussian_scene_updates_scene_file_and_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            scene_path.write_text(json.dumps(scene, indent=2), encoding="utf-8")
+
+            _, previous_score, improved_score = improve_selected_gaussian_scene(folder)
+            improved_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            self.assertGreater(improved_score, previous_score)
+            self.assertAlmostEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            self.assertAlmostEqual(improved_scene["gaussians"][0]["color"][0], 1.0, places=4)
+
+    def test_improve_gaussian_scene_consistency_step_size_zero_keeps_scene_values(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["images"][1]["camera_angles"]["pitch_deg"] = 30.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            degraded_scene["gaussians"][1]["scale"] = [1.5, 1.5, 1.5]
+
+            unchanged_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.0)
+
+            self.assertEqual(unchanged_scene["images"], degraded_scene["images"])
+            self.assertEqual(unchanged_scene["gaussians"], degraded_scene["gaussians"])
+            self.assertAlmostEqual(
+                unchanged_scene["consistency_score"],
+                evaluate_gaussian_scene_consistency(degraded_scene, folder),
+            )
+
+    def test_improve_gaussian_scene_consistency_larger_step_size_improves_more(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+
+            slower_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.25)
+            faster_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.75)
+
+            self.assertGreater(faster_scene["consistency_score"], slower_scene["consistency_score"])
+            self.assertLess(
+                abs(slower_scene["images"][0]["camera_angles"]["yaw_deg"]),
+                abs(degraded_scene["images"][0]["camera_angles"]["yaw_deg"]),
+            )
+            self.assertLess(
+                abs(faster_scene["images"][0]["camera_angles"]["yaw_deg"]),
+                abs(slower_scene["images"][0]["camera_angles"]["yaw_deg"]),
+            )
+
+    def test_improve_gaussian_scene_consistency_adds_missing_gaussian_incrementally(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["gaussians"] = [degraded_scene["gaussians"][0]]
+            degraded_scene["images"][1]["camera_angles"]["yaw_deg"] = 60.0
+            degraded_scene["images"][1]["camera_angles"]["pitch_deg"] = 30.0
+            degraded_scene["images"][1]["camera_angles"]["roll_deg"] = 20.0
+            improve_step_size = 0.5
+
+            improved_scene = improve_gaussian_scene_consistency(
+                degraded_scene,
+                folder,
+                step_size=improve_step_size,
+            )
+
+            self.assertEqual(len(improved_scene["gaussians"]), 2)
+            improved_camera_angles = improved_scene["images"][1]["camera_angles"]
+            self.assertGreater(improved_camera_angles["yaw_deg"], 60.0)
+            self.assertLess(improved_camera_angles["yaw_deg"], 180.0)
+            self.assertLess(abs(improved_camera_angles["pitch_deg"]), 30.0)
+            self.assertLess(abs(improved_camera_angles["roll_deg"]), 20.0)
+
+            right_stats = _load_image_statistics(folder / "right.bmp")
+            initial_gaussian = _build_initial_gaussian_entry("right.bmp", improved_camera_angles, right_stats)
+            target_gaussian = _build_gaussian_entry("right.bmp", improved_camera_angles, right_stats)
+            new_gaussian = improved_scene["gaussians"][1]
+
+            np.testing.assert_allclose(
+                np.asarray(new_gaussian["position"], dtype=np.float64),
+                (1.0 - improve_step_size) * np.asarray(initial_gaussian["position"], dtype=np.float64) +
+                improve_step_size * np.asarray(target_gaussian["position"], dtype=np.float64),
+            )
+            np.testing.assert_allclose(
+                np.asarray(new_gaussian["scale"], dtype=np.float64),
+                (1.0 - improve_step_size) * np.asarray(initial_gaussian["scale"], dtype=np.float64) +
+                improve_step_size * np.asarray(target_gaussian["scale"], dtype=np.float64),
+            )
+            np.testing.assert_allclose(
+                np.asarray(new_gaussian["color"], dtype=np.float64),
+                (1.0 - improve_step_size) * np.asarray(initial_gaussian["color"], dtype=np.float64) +
+                improve_step_size * np.asarray(target_gaussian["color"], dtype=np.float64),
+            )
+            self.assertAlmostEqual(
+                new_gaussian["opacity"],
+                (1.0 - improve_step_size) * float(initial_gaussian["opacity"]) +
+                improve_step_size * float(target_gaussian["opacity"]),
+            )
+
+    def test_improve_gaussian_scene_consistency_step_size_zero_does_not_add_missing_gaussian(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["gaussians"] = [degraded_scene["gaussians"][0]]
+            degraded_scene["images"][1]["camera_angles"]["yaw_deg"] = 60.0
+            degraded_scene["images"][1]["camera_angles"]["pitch_deg"] = 30.0
+            degraded_scene["images"][1]["camera_angles"]["roll_deg"] = 20.0
+
+            unchanged_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=0.0)
+
+            self.assertEqual(len(unchanged_scene["gaussians"]), 1)
+            self.assertEqual(unchanged_scene["images"], degraded_scene["images"])
+
+    def test_repeated_small_improve_steps_continue_to_raise_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            degraded_scene = deepcopy(scene)
+            degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
+            degraded_scene["gaussians"][0]["color"] = [0.0, 1.0, 0.0]
+            scene_path.write_text(json.dumps(degraded_scene, indent=2), encoding="utf-8")
+
+            _, first_previous_score, first_score = improve_selected_gaussian_scene(folder, step_size=0.2)
+            _, second_previous_score, second_score = improve_selected_gaussian_scene(folder, step_size=0.2)
+
+            self.assertGreater(first_score, first_previous_score)
+            self.assertAlmostEqual(second_previous_score, first_score)
+            self.assertGreater(second_score, first_score)
+
+    def test_randomize_gaussian_scene_randomizes_existing_gaussians_and_preserves_images(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            randomized_scene = randomize_gaussian_scene(scene, folder, seed=123)
+
+            self.assertEqual(randomized_scene["images"], scene["images"])
+            self.assertEqual(
+                [gaussian["source_image"] for gaussian in randomized_scene["gaussians"]],
+                [gaussian["source_image"] for gaussian in scene["gaussians"]],
+            )
+            self.assertNotEqual(randomized_scene["gaussians"], scene["gaussians"])
+            self.assertIn("consistency_score", randomized_scene)
+
+            for gaussian in randomized_scene["gaussians"]:
+                self.assertEqual(len(gaussian["position"]), 3)
+                self.assertEqual(len(gaussian["scale"]), 3)
+                self.assertEqual(len(gaussian["rotation"]), 4)
+                self.assertEqual(len(gaussian["color"]), 3)
+                self.assertGreaterEqual(gaussian["opacity"], 0.1)
+                self.assertLessEqual(gaussian["opacity"], 1.0)
+
+    def test_append_random_gaussian_scene_adds_one_new_gaussian(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            expanded_scene = append_random_gaussian_scene(scene, folder, seed=123)
+
+            self.assertEqual(len(expanded_scene["images"]), len(scene["images"]))
+            self.assertEqual(len(expanded_scene["gaussians"]), len(scene["gaussians"]) + 1)
+            self.assertEqual(expanded_scene["gaussians"][:-1], scene["gaussians"])
+            self.assertIn("consistency_score", expanded_scene)
+
+            appended_gaussian = expanded_scene["gaussians"][-1]
+            self.assertEqual(appended_gaussian["source_image"], "random_added_001.bmp")
+            self.assertEqual(len(appended_gaussian["position"]), 3)
+            self.assertEqual(len(appended_gaussian["scale"]), 3)
+            self.assertEqual(len(appended_gaussian["rotation"]), 4)
+            self.assertEqual(len(appended_gaussian["color"]), 3)
+            self.assertLessEqual(
+                max(abs(value) for value in appended_gaussian["position"]),
+                GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
+            )
+            self.assertGreaterEqual(min(appended_gaussian["scale"]), 0.05)
+            self.assertLessEqual(max(appended_gaussian["scale"]), 1.25)
+            self.assertGreaterEqual(appended_gaussian["opacity"], 0.1)
+            self.assertLessEqual(appended_gaussian["opacity"], 1.0)
+            self.assertAlmostEqual(np.linalg.norm(appended_gaussian["rotation"]), 1.0, places=6)
+
+    def test_append_random_gaussian_scene_with_seed_is_reproducible(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            first_scene = append_random_gaussian_scene(scene, folder, seed=42)
+            second_scene = append_random_gaussian_scene(scene, folder, seed=42)
+
+            self.assertEqual(first_scene["gaussians"][-1], second_scene["gaussians"][-1])
+
+    def test_append_random_gaussian_scene_assigns_unique_incrementing_names(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            first_scene = append_random_gaussian_scene(scene, folder, seed=1)
+            second_scene = append_random_gaussian_scene(first_scene, folder, seed=2)
+
+            self.assertEqual(first_scene["gaussians"][-1]["source_image"], "random_added_001.bmp")
+            self.assertEqual(second_scene["gaussians"][-1]["source_image"], "random_added_002.bmp")
+
+    def test_append_random_gaussian_selected_scene_updates_scene_file_and_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            original_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            _, previous_score, expanded_score = append_random_gaussian_selected_scene(folder, seed=123)
+            expanded_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(len(expanded_scene["gaussians"]), len(original_scene["gaussians"]) + 1)
+            self.assertEqual(expanded_scene["gaussians"][:-1], original_scene["gaussians"])
+            self.assertEqual(expanded_scene["gaussians"][-1]["source_image"], "random_added_001.bmp")
+            self.assertAlmostEqual(
+                expanded_scene["consistency_score"],
+                evaluate_gaussian_scene_consistency(expanded_scene, folder),
+            )
+            self.assertAlmostEqual(previous_score, evaluate_gaussian_scene_consistency(original_scene, folder))
+            self.assertEqual(expanded_score, expanded_scene["consistency_score"])
+
+    def test_randomize_selected_gaussian_scene_updates_scene_file_and_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            original_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            _, previous_score, randomized_score = randomize_selected_gaussian_scene(folder, seed=123)
+            randomized_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                [gaussian["source_image"] for gaussian in randomized_scene["gaussians"]],
+                [gaussian["source_image"] for gaussian in original_scene["gaussians"]],
+            )
+            self.assertNotEqual(randomized_scene["gaussians"], original_scene["gaussians"])
+            self.assertNotEqual(randomized_score, previous_score)
+            self.assertAlmostEqual(
+                randomized_scene["consistency_score"],
+                evaluate_gaussian_scene_consistency(randomized_scene, folder),
+            )
 
 
 if __name__ == "__main__":
