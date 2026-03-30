@@ -1,11 +1,24 @@
 import unittest
+from collections import defaultdict
+from unittest.mock import patch
 
 import numpy as np
 
-from gaussian_viewer import Camera, Gaussian3D, HEIGHT, WIDTH, project_gaussians, render
+from gaussian_viewer import Camera, Gaussian3D, HEIGHT, MOUSE_SENS, WIDTH, project_gaussians, render
 
 
 class GaussianViewerTests(unittest.TestCase):
+    @patch("pygame.key.get_mods", return_value=0)
+    def test_camera_update_inverts_vertical_mouse_rotation(self, _get_mods):
+        cam = Camera(pitch=10.0)
+        keys = defaultdict(bool)
+
+        cam.update(keys, dt=0.0, dmx=0.0, dmy=4.0)
+        self.assertAlmostEqual(cam.pitch, 10.0 - 4.0 * MOUSE_SENS)
+
+        cam.update(keys, dt=0.0, dmx=0.0, dmy=-10.0)
+        self.assertAlmostEqual(cam.pitch, 10.0 + 6.0 * MOUSE_SENS)
+
     def test_project_gaussians_sorts_front_to_back(self):
         cam = Camera(pos=(0.0, 0.0, 4.5))
         gaussians = [

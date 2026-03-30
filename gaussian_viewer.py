@@ -97,7 +97,7 @@ class Camera:
 
     def update(self, keys, dt: float, dmx: float, dmy: float):
         self.yaw   += dmx * MOUSE_SENS
-        self.pitch  = float(np.clip(self.pitch + dmy * MOUSE_SENS, -89.0, 89.0))
+        self.pitch  = float(np.clip(self.pitch - dmy * MOUSE_SENS, -89.0, 89.0))
 
         speed = MOVE_SPEED * (3.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1.0)
         f, r = self.forward, self.right
