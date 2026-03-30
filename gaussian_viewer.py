@@ -103,7 +103,6 @@ class Camera:
             radius = np.linalg.norm(self.pos)
             if radius > 0.0:
                 self.pos = -self.forward * radius
-            return
 
         speed = MOVE_SPEED * (3.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1.0)
         f, r = self.forward, self.right
