@@ -24,6 +24,7 @@ import copy
 import json
 import sys
 import math
+from contextlib import suppress
 import numpy as np
 import pygame
 from dataclasses import dataclass
@@ -71,6 +72,38 @@ def open_image_folder(folder_path: str | Path) -> list[Path]:
     if not images:
         raise ValueError(f"A mappában nincs támogatott kép: {folder}")
     return images
+
+
+def select_working_folder(
+    initial_dir: str | Path | None = None,
+    dialog_opener=None,
+    tk_factory=None,
+) -> Path | None:
+    """Megnyit egy mappaválasztó ablakot, és visszaadja a kijelölt mappát."""
+    if dialog_opener is not None:
+        selected = dialog_opener(initial_dir)
+        return Path(selected).expanduser().resolve() if selected else None
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("A mappaválasztó párbeszédablak nem érhető el.") from exc
+
+    tk_factory = tk_factory or tk.Tk
+    root = tk_factory()
+    root.withdraw()
+    root.update()
+    try:
+        selected = filedialog.askdirectory(
+            initialdir=str(Path(initial_dir).expanduser().resolve()) if initial_dir else None,
+            title="Válaszd ki a használandó mappát",
+        )
+    finally:
+        with suppress(Exception):
+            root.destroy()
+
+    return Path(selected).expanduser().resolve() if selected else None
 
 
 def _load_image_statistics(image_path: str | Path) -> dict:
@@ -539,6 +572,8 @@ def main() -> None:
     pygame.event.set_grab(True)
 
     cam = Camera(pos=[0.0, 0.0, 4.5])
+    selected_folder: Path | None = None
+    folder_status = "Nincs kijelölt mappa"
 
     while True:
         dt   = clock.tick(60) / 1000.0
@@ -552,6 +587,17 @@ def main() -> None:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 pygame.quit()
                 sys.exit()
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_o:
+                try:
+                    chosen_folder = select_working_folder(selected_folder)
+                    if chosen_folder is None:
+                        folder_status = "Mappaválasztás megszakítva"
+                    else:
+                        image_count = len(open_image_folder(chosen_folder))
+                        selected_folder = chosen_folder
+                        folder_status = f"Kijelölt mappa: {selected_folder.name} ({image_count} kép)"
+                except (RuntimeError, FileNotFoundError, ValueError) as exc:
+                    folder_status = str(exc)
             if event.type == pygame.MOUSEMOTION:
                 dmx, dmy = event.rel
 
@@ -576,16 +622,18 @@ def main() -> None:
             True, (255, 240, 80),
         )
         hud_bot = font_s.render(
-            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  Shift: gyors  |  ESC: kilépés",
+            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  O: mappa megnyitása  |  ESC: kilépés",
             True, (170, 170, 170),
         )
+        hud_folder = font_s.render(folder_status, True, (150, 220, 255))
 
         # Félig átlátszó sáv a felső szöveg mögé
         bar = pygame.Surface((hud_top.get_width() + 20, hud_top.get_height() + 10), pygame.SRCALPHA)
         bar.fill((0, 0, 0, 140))
         screen.blit(bar, (5, 5))
         screen.blit(hud_top, (15, 10))
-        screen.blit(hud_bot, (10, HEIGHT - 22))
+        screen.blit(hud_bot, (10, HEIGHT - 42))
+        screen.blit(hud_folder, (10, HEIGHT - 22))
 
         pygame.display.flip()
 

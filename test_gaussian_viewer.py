@@ -22,6 +22,7 @@ from gaussian_viewer import (
     open_image_folder,
     project_gaussians,
     render,
+    select_working_folder,
 )
 
 
@@ -140,6 +141,25 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertEqual(len(scene["gaussians"]), 2)
             self.assertEqual(scene["gaussians"][0]["source_image"], "back.bmp")
             self.assertAlmostEqual(scene["gaussians"][1]["color"][0], 1.0, places=4)
+
+    def test_select_working_folder_returns_selected_path(self):
+        initial_dir = Path("/tmp")
+        selected_path = Path("/home/runner/work")
+        seen_initial_dirs = []
+
+        def dialog_opener(passed_initial_dir):
+            seen_initial_dirs.append(passed_initial_dir)
+            return str(selected_path)
+
+        result = select_working_folder(initial_dir=initial_dir, dialog_opener=dialog_opener)
+
+        self.assertEqual(result, selected_path.resolve())
+        self.assertEqual(seen_initial_dirs, [initial_dir])
+
+    def test_select_working_folder_returns_none_when_cancelled(self):
+        result = select_working_folder(dialog_opener=lambda _initial_dir: "")
+
+        self.assertIsNone(result)
 
     def test_evaluate_and_improve_gaussian_scene_consistency(self):
         with TemporaryDirectory() as temp_dir:

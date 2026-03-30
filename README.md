@@ -8,3 +8,5 @@ Az alkalmazás jelenleg tartalmaz egy egyszerű képmappa-alapú Gaussian Splatt
 - `improve_gaussian_scene_consistency(scene_data, folder_path=None, step_size=0.5)`: javítja a jelenet pontszámát
 
 A létrehozott JSON fájl az egyes képekhez becsült kamera-szögeket és a hozzájuk tartozó gauss-foltok adatait tárolja.
+
+A viewerben az `O` billentyűvel mappaválasztó ablak nyitható, amivel kijelölhető a használandó képmappa.
