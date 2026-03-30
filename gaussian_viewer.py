@@ -99,7 +99,7 @@ class Camera:
         self.yaw   += dmx * MOUSE_SENS
         self.pitch  = float(np.clip(self.pitch - dmy * MOUSE_SENS, -89.0, 89.0))
 
-        if keys[pygame.K_3]:
+        if keys[pygame.K_3] and (dmx != 0.0 or dmy != 0.0):
             radius = np.linalg.norm(self.pos)
             if radius > 0.0:
                 self.pos = -self.forward * radius
