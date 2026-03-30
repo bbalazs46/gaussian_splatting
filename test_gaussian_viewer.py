@@ -141,10 +141,12 @@ class GaussianViewerTests(unittest.TestCase):
             scene = json.loads(scene_path.read_text(encoding="utf-8"))
             self.assertEqual([image["file"] for image in scene["images"]], ["back.bmp", "front.bmp"])
             self.assertEqual(scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
+            self.assertEqual(scene["images"][0]["camera_angles"]["pitch_deg"], 0.0)
+            self.assertEqual(scene["images"][0]["camera_angles"]["roll_deg"], 0.0)
             self.assertEqual(scene["images"][1]["camera_angles"]["yaw_deg"], 180.0)
             self.assertEqual(len(scene["gaussians"]), 2)
             self.assertEqual(scene["gaussians"][0]["source_image"], "back.bmp")
-            self.assertAlmostEqual(scene["gaussians"][1]["color"][0], 1.0, places=4)
+            self.assertLess(scene["gaussians"][1]["color"][0], 1.0)
 
     def test_select_working_folder_returns_selected_path(self):
         with TemporaryDirectory() as selected_dir:
@@ -187,7 +189,9 @@ class GaussianViewerTests(unittest.TestCase):
 
             scene_path = create_gaussian_scene_file(folder)
             scene = json.loads(scene_path.read_text(encoding="utf-8"))
-            good_score = evaluate_gaussian_scene_consistency(scene, folder)
+            initial_score = evaluate_gaussian_scene_consistency(scene, folder)
+            self.assertGreater(initial_score, 0.0)
+            self.assertLess(initial_score, 1.0)
 
             degraded_scene = deepcopy(scene)
             degraded_scene["images"][0]["camera_angles"]["yaw_deg"] = 135.0
@@ -197,15 +201,38 @@ class GaussianViewerTests(unittest.TestCase):
             degraded_scene["gaussians"][1]["scale"] = [1.5, 1.5, 1.5]
             degraded_score = evaluate_gaussian_scene_consistency(degraded_scene, folder)
 
-            self.assertLess(degraded_score, good_score)
+            self.assertLess(degraded_score, initial_score)
 
             improved_scene = improve_gaussian_scene_consistency(degraded_scene, folder, step_size=1.0)
             improved_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
 
             self.assertGreater(improved_score, degraded_score)
-            self.assertAlmostEqual(improved_score, good_score, places=4)
+            self.assertGreater(improved_score, initial_score)
+            self.assertAlmostEqual(improved_score, 1.0, places=4)
             self.assertEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
-            np.testing.assert_allclose(improved_scene["gaussians"][0]["color"], scene["gaussians"][0]["color"], atol=1e-6)
+            self.assertGreater(
+                improved_scene["gaussians"][0]["color"][0],
+                scene["gaussians"][0]["color"][0],
+            )
+
+    def test_evaluate_gaussian_scene_consistency_penalizes_position_and_rotation_errors(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            improved_scene = improve_gaussian_scene_consistency(scene, folder, step_size=1.0)
+            consistent_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
+
+            degraded_scene = deepcopy(improved_scene)
+            degraded_scene["gaussians"][0]["position"] = [99.0, 99.0, 99.0]
+            degraded_scene["gaussians"][1]["rotation"] = [0.0, 1.0, 0.0, 0.0]
+            degraded_score = evaluate_gaussian_scene_consistency(degraded_scene, folder)
+
+            self.assertAlmostEqual(consistent_score, 1.0, places=4)
+            self.assertLess(degraded_score, consistent_score)
 
     def test_evaluate_selected_gaussian_scene_scores_existing_scene_file(self):
         with TemporaryDirectory() as temp_dir:
@@ -219,6 +246,7 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertEqual(scene_path, folder / DEFAULT_SCENE_FILENAME)
             self.assertTrue(scene_path.exists())
             self.assertGreater(score, 0.0)
+            self.assertLess(score, 1.0)
 
     def test_evaluate_selected_gaussian_scene_requires_existing_scene_file(self):
         with TemporaryDirectory() as temp_dir:

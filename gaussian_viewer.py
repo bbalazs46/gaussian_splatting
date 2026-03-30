@@ -49,9 +49,18 @@ OPACITY_ERROR_WEIGHT = 0.8
 YAW_ERROR_WEIGHT = 0.4
 PITCH_ERROR_WEIGHT = 0.2
 ROLL_ERROR_WEIGHT = 0.1
+POSITION_ERROR_WEIGHT = 0.8
+ROTATION_ERROR_WEIGHT = 0.3
 MAX_YAW_DEVIATION_DEG = 180.0
 MAX_PITCH_DEVIATION_DEG = 90.0
 MAX_ROLL_DEVIATION_DEG = 180.0
+INITIAL_POSITION_FACTOR = 0.8
+INITIAL_TARGET_SCALE_WEIGHT = 0.35
+INITIAL_TARGET_COLOR_WEIGHT = 0.75
+INITIAL_TARGET_OPACITY_WEIGHT = 0.5
+NEUTRAL_GAUSSIAN_COLOR = np.array([0.5, 0.5, 0.5], dtype=np.float64)
+NEUTRAL_GAUSSIAN_SCALE = np.array([0.45, 0.45, 0.25], dtype=np.float64)
+NEUTRAL_GAUSSIAN_OPACITY = 0.65
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -187,6 +196,47 @@ def _build_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> 
     }
 
 
+def _build_initial_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> dict:
+    """Durva kezdeti Gaussian-becslést készít, amit a javítás közelít a célértékekhez."""
+    target_gaussian = _build_gaussian_entry(image_name, camera_angles, stats)
+    target_position = np.asarray(target_gaussian["position"], dtype=np.float64)
+    target_scale = np.asarray(target_gaussian["scale"], dtype=np.float64)
+    target_color = np.asarray(target_gaussian["color"], dtype=np.float64)
+
+    return {
+        "source_image": image_name,
+        "position": (target_position * INITIAL_POSITION_FACTOR).tolist(),
+        "scale": (
+            (1.0 - INITIAL_TARGET_SCALE_WEIGHT) * NEUTRAL_GAUSSIAN_SCALE +
+            INITIAL_TARGET_SCALE_WEIGHT * target_scale
+        ).tolist(),
+        "rotation": [1.0, 0.0, 0.0, 0.0],
+        "color": (
+            INITIAL_TARGET_COLOR_WEIGHT * target_color +
+            (1.0 - INITIAL_TARGET_COLOR_WEIGHT) * NEUTRAL_GAUSSIAN_COLOR
+        ).tolist(),
+        "opacity": float(
+            INITIAL_TARGET_OPACITY_WEIGHT * float(target_gaussian["opacity"]) +
+            (1.0 - INITIAL_TARGET_OPACITY_WEIGHT) * NEUTRAL_GAUSSIAN_OPACITY
+        ),
+    }
+
+
+def _quaternion_distance(lhs: np.ndarray, rhs: np.ndarray) -> float:
+    """Előjelfüggetlen távolság két kvaternió között."""
+    lhs = np.asarray(lhs, dtype=np.float64)
+    rhs = np.asarray(rhs, dtype=np.float64)
+    lhs_norm = np.linalg.norm(lhs)
+    rhs_norm = np.linalg.norm(rhs)
+    if lhs_norm < 1e-10 or rhs_norm < 1e-10:
+        return 1.0
+
+    lhs = lhs / lhs_norm
+    rhs = rhs / rhs_norm
+    # A q és -q ugyanazt a forgatást reprezentálja, ezért a kisebbik eltérést vesszük.
+    return float(min(np.linalg.norm(lhs - rhs), np.linalg.norm(lhs + rhs)) / 2.0)
+
+
 def build_gaussian_scene_data(folder_path: str | Path) -> dict:
     """Egyszerű jelenetleírást készít a mappa képeihez becsült kameraállásokkal."""
     image_paths = open_image_folder(folder_path)
@@ -208,7 +258,7 @@ def build_gaussian_scene_data(folder_path: str | Path) -> dict:
             "file": image_path.name,
             "camera_angles": camera_angles,
         })
-        scene["gaussians"].append(_build_gaussian_entry(image_path.name, camera_angles, stats))
+        scene["gaussians"].append(_build_initial_gaussian_entry(image_path.name, camera_angles, stats))
 
     return scene
 
@@ -270,14 +320,26 @@ def evaluate_gaussian_scene_consistency(scene_data: dict, folder_path: str | Pat
         target_opacity = _target_opacity_from_stats(stats)
 
         camera_angles = image_entry.get("camera_angles", {})
+        target_gaussian = _build_gaussian_entry(image_name, camera_angles, stats)
         yaw_error = abs(_wrap_degrees(float(camera_angles.get("yaw_deg", 0.0)) - target_yaw)) / MAX_YAW_DEVIATION_DEG
         pitch_error = abs(float(camera_angles.get("pitch_deg", 0.0))) / MAX_PITCH_DEVIATION_DEG
         roll_error = abs(float(camera_angles.get("roll_deg", 0.0))) / MAX_ROLL_DEVIATION_DEG
+        position_error = float(
+            np.mean(
+                np.abs(
+                    np.asarray(gaussian["position"], dtype=np.float64) -
+                    np.asarray(target_gaussian["position"], dtype=np.float64)
+                )
+            ) / max(GAUSSIAN_CAMERA_RADIUS, 1e-6)
+        )
+        rotation_error = _quaternion_distance(gaussian.get("rotation", [1.0, 0.0, 0.0, 0.0]), target_gaussian["rotation"])
         color_error = float(np.mean(np.abs(np.asarray(gaussian["color"], dtype=np.float64) - stats["mean_color"])))
         scale_error = float(np.mean(np.abs(np.asarray(gaussian["scale"], dtype=np.float64) - target_scale)))
         opacity_error = abs(float(gaussian["opacity"]) - target_opacity)
 
         penalty = (
+            position_error * POSITION_ERROR_WEIGHT +
+            rotation_error * ROTATION_ERROR_WEIGHT +
             color_error * COLOR_ERROR_WEIGHT +
             scale_error * SCALE_ERROR_WEIGHT +
             opacity_error * OPACITY_ERROR_WEIGHT +
