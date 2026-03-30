@@ -99,6 +99,12 @@ class Camera:
         self.yaw   += dmx * MOUSE_SENS
         self.pitch  = float(np.clip(self.pitch - dmy * MOUSE_SENS, -89.0, 89.0))
 
+        if keys[pygame.K_3]:
+            radius = np.linalg.norm(self.pos)
+            if radius > 0.0:
+                self.pos = -self.forward * radius
+            return
+
         speed = MOVE_SPEED * (3.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 1.0)
         f, r = self.forward, self.right
 

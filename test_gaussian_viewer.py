@@ -3,6 +3,7 @@ from collections import defaultdict
 from unittest.mock import patch
 
 import numpy as np
+import pygame
 
 from gaussian_viewer import Camera, Gaussian3D, HEIGHT, MOUSE_SENS, WIDTH, project_gaussians, render
 
@@ -18,6 +19,17 @@ class GaussianViewerTests(unittest.TestCase):
 
         cam.update(keys, dt=0.0, dmx=0.0, dmy=-10.0)
         self.assertAlmostEqual(cam.pitch, 10.0 + 6.0 * MOUSE_SENS)
+
+    @patch("pygame.key.get_mods", return_value=0)
+    def test_camera_update_orbits_around_origin_while_key_3_is_pressed(self, _get_mods):
+        cam = Camera(pos=(0.0, 0.0, 4.0), yaw=0.0, pitch=0.0)
+        keys = defaultdict(bool, {pygame.K_3: True})
+
+        initial_radius = np.linalg.norm(cam.pos)
+        cam.update(keys, dt=1.0, dmx=20.0, dmy=8.0)
+
+        self.assertAlmostEqual(np.linalg.norm(cam.pos), initial_radius)
+        np.testing.assert_allclose(cam.pos, -cam.forward * initial_radius, atol=1e-6)
 
     def test_project_gaussians_sorts_front_to_back(self):
         cam = Camera(pos=(0.0, 0.0, 4.5))
