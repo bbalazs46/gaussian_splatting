@@ -9,4 +9,4 @@ Az alkalmazás jelenleg tartalmaz egy egyszerű képmappa-alapú Gaussian Splatt
 
 A létrehozott JSON fájl az egyes képekhez becsült kamera-szögeket és a hozzájuk tartozó gauss-foltok adatait tárolja.
 
-A viewerben az `O` billentyűvel mappaválasztó ablak nyitható, amivel kijelölhető a használandó képmappa. A `C` billentyű kiértékeli a jelenet konzisztenciáját, az `I` billentyű pedig javítja és elmenti a jelenetet.
+A viewerben az `O` billentyűvel mappaválasztó ablak nyitható, amivel kijelölhető a használandó képmappa. A `C` billentyű kiértékeli a meglévő `gaussian_scene.json` konzisztenciáját, az `I` billentyű pedig javítja és elmenti a jelenetet.

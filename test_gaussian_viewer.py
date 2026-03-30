@@ -207,17 +207,26 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
             np.testing.assert_allclose(improved_scene["gaussians"][0]["color"], scene["gaussians"][0]["color"], atol=1e-6)
 
-    def test_evaluate_selected_gaussian_scene_creates_scene_file_and_scores_it(self):
+    def test_evaluate_selected_gaussian_scene_scores_existing_scene_file(self):
         with TemporaryDirectory() as temp_dir:
             folder = Path(temp_dir)
             self._create_test_image(folder / "left.bmp", (255, 64, 64))
             self._create_test_image(folder / "right.bmp", (64, 64, 255))
+            create_gaussian_scene_file(folder)
 
             scene_path, score = evaluate_selected_gaussian_scene(folder)
 
             self.assertEqual(scene_path, folder / DEFAULT_SCENE_FILENAME)
             self.assertTrue(scene_path.exists())
             self.assertGreater(score, 0.0)
+
+    def test_evaluate_selected_gaussian_scene_requires_existing_scene_file(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+
+            with self.assertRaises(FileNotFoundError):
+                evaluate_selected_gaussian_scene(folder)
 
     def test_improve_selected_gaussian_scene_updates_scene_file_and_score(self):
         with TemporaryDirectory() as temp_dir:

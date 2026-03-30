@@ -221,18 +221,21 @@ def create_gaussian_scene_file(folder_path: str | Path, output_filename: str = D
     return scene_path
 
 
-def load_or_create_gaussian_scene_file(
+def load_gaussian_scene_file(
     folder_path: str | Path | None,
     scene_filename: str = DEFAULT_SCENE_FILENAME,
 ) -> tuple[Path, dict]:
-    """Betölti a jelenetfájlt, vagy létrehozza, ha még nem létezik."""
+    """Betölti a kiválasztott mappához tartozó jelenetfájlt."""
     if folder_path is None:
         raise ValueError("Előbb válassz mappát az O billentyűvel.")
 
     folder = Path(folder_path).expanduser().resolve()
     scene_path = folder / scene_filename
     if not scene_path.exists():
-        scene_path = create_gaussian_scene_file(folder, scene_filename)
+        raise FileNotFoundError(
+            f"Nem található jelenetfájl: {scene_path.name}. "
+            f"Hozd létre előbb a {scene_filename} fájlt."
+        )
 
     scene_data = json.loads(scene_path.read_text(encoding="utf-8"))
     return scene_path, scene_data
@@ -358,7 +361,7 @@ def evaluate_selected_gaussian_scene(
     scene_filename: str = DEFAULT_SCENE_FILENAME,
 ) -> tuple[Path, float]:
     """Betölti a kiválasztott mappához tartozó jelenetet és visszaadja a pontszámát."""
-    scene_path, scene_data = load_or_create_gaussian_scene_file(folder_path, scene_filename)
+    scene_path, scene_data = load_gaussian_scene_file(folder_path, scene_filename)
     score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
     return scene_path, score
 
@@ -369,7 +372,7 @@ def improve_selected_gaussian_scene(
     step_size: float = 1.0,
 ) -> tuple[Path, float, float]:
     """Javítja a kiválasztott jelenetet, elmenti, és visszaadja az előtte/utána pontszámot."""
-    scene_path, scene_data = load_or_create_gaussian_scene_file(folder_path, scene_filename)
+    scene_path, scene_data = load_gaussian_scene_file(folder_path, scene_filename)
     previous_score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
     improved_scene = improve_gaussian_scene_consistency(scene_data, folder_path, step_size=step_size)
     scene_path.write_text(json.dumps(improved_scene, indent=2), encoding="utf-8")
