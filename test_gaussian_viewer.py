@@ -23,6 +23,8 @@ from gaussian_viewer import (
     evaluate_selected_gaussian_scene,
     improve_gaussian_scene_consistency,
     improve_selected_gaussian_scene,
+    randomize_gaussian_scene,
+    randomize_selected_gaussian_scene,
     open_image_folder,
     project_gaussians,
     render,
@@ -283,15 +285,15 @@ class GaussianViewerTests(unittest.TestCase):
             consistent_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
 
             noisy_scene = deepcopy(improved_scene)
-            rng = random.Random(123)
+            random_generator = random.Random(123)
             for gaussian_index in range(5):
                 noisy_scene["gaussians"].append({
                     "source_image": f"random_{gaussian_index}.bmp",
-                    "position": [rng.uniform(-50.0, 50.0) for _ in range(3)],
-                    "scale": [rng.uniform(0.1, 10.0) for _ in range(3)],
-                    "rotation": [rng.uniform(-2.0, 2.0) for _ in range(4)],
-                    "color": [rng.uniform(-1.0, 2.0) for _ in range(3)],
-                    "opacity": rng.uniform(-3.0, 3.0),
+                    "position": [random_generator.uniform(-50.0, 50.0) for _ in range(3)],
+                    "scale": [random_generator.uniform(0.1, 10.0) for _ in range(3)],
+                    "rotation": [random_generator.uniform(-2.0, 2.0) for _ in range(4)],
+                    "color": [random_generator.uniform(-1.0, 2.0) for _ in range(3)],
+                    "opacity": random_generator.uniform(-3.0, 3.0),
                 })
             noisy_score = evaluate_gaussian_scene_consistency(noisy_scene, folder)
 
@@ -339,6 +341,55 @@ class GaussianViewerTests(unittest.TestCase):
             self.assertGreater(improved_score, previous_score)
             self.assertAlmostEqual(improved_scene["images"][0]["camera_angles"]["yaw_deg"], 0.0)
             self.assertAlmostEqual(improved_scene["gaussians"][0]["color"][0], 1.0, places=4)
+
+    def test_randomize_gaussian_scene_randomizes_existing_gaussians_and_preserves_images(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            randomized_scene = randomize_gaussian_scene(scene, folder, seed=123)
+
+            self.assertEqual(randomized_scene["images"], scene["images"])
+            self.assertEqual(
+                [gaussian["source_image"] for gaussian in randomized_scene["gaussians"]],
+                [gaussian["source_image"] for gaussian in scene["gaussians"]],
+            )
+            self.assertNotEqual(randomized_scene["gaussians"], scene["gaussians"])
+            self.assertIn("consistency_score", randomized_scene)
+
+            for gaussian in randomized_scene["gaussians"]:
+                self.assertEqual(len(gaussian["position"]), 3)
+                self.assertEqual(len(gaussian["scale"]), 3)
+                self.assertEqual(len(gaussian["rotation"]), 4)
+                self.assertEqual(len(gaussian["color"]), 3)
+                self.assertGreaterEqual(gaussian["opacity"], 0.1)
+                self.assertLessEqual(gaussian["opacity"], 1.0)
+
+    def test_randomize_selected_gaussian_scene_updates_scene_file_and_score(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            original_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            _, previous_score, randomized_score = randomize_selected_gaussian_scene(folder, seed=123)
+            randomized_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                [gaussian["source_image"] for gaussian in randomized_scene["gaussians"]],
+                [gaussian["source_image"] for gaussian in original_scene["gaussians"]],
+            )
+            self.assertNotEqual(randomized_scene["gaussians"], original_scene["gaussians"])
+            self.assertNotEqual(randomized_score, previous_score)
+            self.assertAlmostEqual(
+                randomized_scene["consistency_score"],
+                evaluate_gaussian_scene_consistency(randomized_scene, folder),
+            )
 
 
 if __name__ == "__main__":

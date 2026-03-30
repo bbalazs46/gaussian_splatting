@@ -19,6 +19,7 @@ Vezérlők:
   O              – használandó mappa kiválasztása
   C              – jelenet konzisztencia kiértékelése
   I              – jelenet javítása
+  R              – meglévő Gaussian-foltok randomizálása és mentése
   Shift          – gyors mozgás (3×)
   ESC            – kilépés
 """
@@ -61,6 +62,11 @@ INITIAL_TARGET_OPACITY_WEIGHT = 0.5
 NEUTRAL_GAUSSIAN_COLOR = np.array([0.5, 0.5, 0.5], dtype=np.float64)
 NEUTRAL_GAUSSIAN_SCALE = np.array([0.45, 0.45, 0.25], dtype=np.float64)
 NEUTRAL_GAUSSIAN_OPACITY = 0.65
+RANDOMIZED_POSITION_RANGE_FACTOR = 2.0
+RANDOMIZED_SCALE_MIN = 0.05
+RANDOMIZED_SCALE_MAX = 1.25
+RANDOMIZED_OPACITY_MIN = 0.1
+RANDOMIZED_OPACITY_MAX = 1.0
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -418,6 +424,42 @@ def improve_gaussian_scene_consistency(
     return improved_scene
 
 
+def randomize_gaussian_scene(
+    scene_data: dict,
+    folder_path: str | Path | None = None,
+    seed: int | None = None,
+) -> dict:
+    """A meglévő Gaussian-bejegyzéseket random értékekre állítja és újrapontozza a jelenetet."""
+    folder = Path(folder_path or scene_data.get("folder", ".")).expanduser().resolve()
+    randomized_scene = copy.deepcopy(scene_data)
+    gaussians = randomized_scene.setdefault("gaussians", [])
+    random_generator = np.random.default_rng(seed)
+
+    for gaussian in gaussians:
+        gaussian["position"] = random_generator.uniform(
+            -GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
+            GAUSSIAN_CAMERA_RADIUS * RANDOMIZED_POSITION_RANGE_FACTOR,
+            size=3,
+        ).astype(np.float64).tolist()
+        gaussian["scale"] = random_generator.uniform(
+            RANDOMIZED_SCALE_MIN,
+            RANDOMIZED_SCALE_MAX,
+            size=3,
+        ).astype(np.float64).tolist()
+        rotation = random_generator.normal(size=4).astype(np.float64)
+        rotation_norm = float(np.linalg.norm(rotation))
+        if rotation_norm < 1e-10:
+            gaussian["rotation"] = [1.0, 0.0, 0.0, 0.0]
+        else:
+            gaussian["rotation"] = (rotation / rotation_norm).tolist()
+        gaussian["color"] = random_generator.uniform(0.0, 1.0, size=3).astype(np.float64).tolist()
+        gaussian["opacity"] = float(random_generator.uniform(RANDOMIZED_OPACITY_MIN, RANDOMIZED_OPACITY_MAX))
+
+    randomized_scene["folder"] = str(folder)
+    randomized_scene["consistency_score"] = evaluate_gaussian_scene_consistency(randomized_scene, folder)
+    return randomized_scene
+
+
 def evaluate_selected_gaussian_scene(
     folder_path: str | Path | None,
     scene_filename: str = DEFAULT_SCENE_FILENAME,
@@ -440,6 +482,20 @@ def improve_selected_gaussian_scene(
     scene_path.write_text(json.dumps(improved_scene, indent=2), encoding="utf-8")
     improved_score = float(improved_scene.get("consistency_score", previous_score))
     return scene_path, previous_score, improved_score
+
+
+def randomize_selected_gaussian_scene(
+    folder_path: str | Path | None,
+    scene_filename: str = DEFAULT_SCENE_FILENAME,
+    seed: int | None = None,
+) -> tuple[Path, float, float]:
+    """Randomizálja a kiválasztott jelenetet, elmenti, és visszaadja az előtte/utána pontszámot."""
+    scene_path, scene_data = load_gaussian_scene_file(folder_path, scene_filename)
+    previous_score = evaluate_gaussian_scene_consistency(scene_data, folder_path)
+    randomized_scene = randomize_gaussian_scene(scene_data, folder_path, seed=seed)
+    scene_path.write_text(json.dumps(randomized_scene, indent=2), encoding="utf-8")
+    randomized_score = float(randomized_scene.get("consistency_score", previous_score))
+    return scene_path, previous_score, randomized_score
 
 
 def _scene_data_to_gaussians(scene_data: dict) -> list[Gaussian3D]:
@@ -781,6 +837,17 @@ def main() -> None:
                     )
                 except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
                     folder_status = str(exc)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                try:
+                    scene_path, previous_score, randomized_score = randomize_selected_gaussian_scene(selected_folder)
+                    _, randomized_scene_data = load_gaussian_scene_file(selected_folder)
+                    active_scene = _scene_data_to_gaussians(randomized_scene_data)
+                    folder_status = (
+                        f"Randomizálás: {previous_score:.3f} → {randomized_score:.3f} "
+                        f"({scene_path.name})"
+                    )
+                except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                    folder_status = str(exc)
             if event.type == pygame.MOUSEMOTION:
                 dmx, dmy = event.rel
 
@@ -805,7 +872,7 @@ def main() -> None:
             True, (255, 240, 80),
         )
         hud_bot = font_s.render(
-            "WASD/Nyilak: mozgás  |  Q/E: le/fel  |  Egér: nézés  |  Shift: gyors  |  O: mappa  |  C: konziszt.  |  I: javít",
+            "WASD/Nyilak  |  Q/E: le/fel  |  Egér  |  Shift  |  O: mappa  |  C: konsziszt.  |  I: javít  |  R: random",
             True, (170, 170, 170),
         )
         hud_folder = font_s.render(folder_status, True, (150, 220, 255))
