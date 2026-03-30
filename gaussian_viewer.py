@@ -38,6 +38,14 @@ MOUSE_SENS   = 0.15       # fok / pixel
 BG_COLOR     = (10, 10, 20)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 DEFAULT_SCENE_FILENAME = "gaussian_scene.json"
+GAUSSIAN_CAMERA_RADIUS = 1.5
+GAUSSIAN_VERTICAL_POSITION_FACTOR = 0.5
+COLOR_ERROR_WEIGHT = 1.8
+SCALE_ERROR_WEIGHT = 1.0
+OPACITY_ERROR_WEIGHT = 0.8
+YAW_ERROR_WEIGHT = 0.4
+PITCH_ERROR_WEIGHT = 0.2
+ROLL_ERROR_WEIGHT = 0.1
 
 
 # ── Gauss adatstruktúra ────────────────────────────────────────────────────────
@@ -109,11 +117,10 @@ def _wrap_degrees(angle: float) -> float:
 def _build_gaussian_entry(image_name: str, camera_angles: dict, stats: dict) -> dict:
     yaw_rad = math.radians(camera_angles["yaw_deg"])
     pitch_rad = math.radians(camera_angles["pitch_deg"])
-    radius = 1.5
     position = np.array([
-        math.sin(yaw_rad) * radius,
-        math.sin(pitch_rad) * radius * 0.5,
-        math.cos(yaw_rad) * radius,
+        math.sin(yaw_rad) * GAUSSIAN_CAMERA_RADIUS,
+        math.sin(pitch_rad) * GAUSSIAN_CAMERA_RADIUS * GAUSSIAN_VERTICAL_POSITION_FACTOR,
+        math.cos(yaw_rad) * GAUSSIAN_CAMERA_RADIUS,
     ], dtype=np.float64)
     return {
         "source_image": image_name,
@@ -196,12 +203,12 @@ def evaluate_gaussian_scene_consistency(scene_data: dict, folder_path: str | Pat
         opacity_error = abs(float(gaussian["opacity"]) - target_opacity)
 
         penalty = (
-            color_error * 1.8 +
-            scale_error * 1.0 +
-            opacity_error * 0.8 +
-            yaw_error * 0.4 +
-            pitch_error * 0.2 +
-            roll_error * 0.1
+            color_error * COLOR_ERROR_WEIGHT +
+            scale_error * SCALE_ERROR_WEIGHT +
+            opacity_error * OPACITY_ERROR_WEIGHT +
+            yaw_error * YAW_ERROR_WEIGHT +
+            pitch_error * PITCH_ERROR_WEIGHT +
+            roll_error * ROLL_ERROR_WEIGHT
         )
         total_score += max(0.0, 1.0 - min(penalty, 1.0))
 
@@ -237,7 +244,8 @@ def improve_gaussian_scene_consistency(
             "roll_deg": 0.0,
         }
         camera_angles = image_entry.setdefault("camera_angles", target_camera.copy())
-        camera_angles["yaw_deg"] = float(camera_angles.get("yaw_deg", target_yaw) + (target_yaw - float(camera_angles.get("yaw_deg", target_yaw))) * step_size)
+        current_yaw = float(camera_angles.get("yaw_deg", target_yaw))
+        camera_angles["yaw_deg"] = float(current_yaw + (target_yaw - current_yaw) * step_size)
         camera_angles["pitch_deg"] = float(camera_angles.get("pitch_deg", 0.0) * (1.0 - step_size))
         camera_angles["roll_deg"] = float(camera_angles.get("roll_deg", 0.0) * (1.0 - step_size))
 
