@@ -1,4 +1,5 @@
 import json
+import random
 import unittest
 from collections import defaultdict
 from copy import deepcopy
@@ -233,6 +234,34 @@ class GaussianViewerTests(unittest.TestCase):
 
             self.assertAlmostEqual(consistent_score, 1.0, places=4)
             self.assertLess(degraded_score, consistent_score)
+
+    def test_evaluate_gaussian_scene_consistency_penalizes_extra_random_gaussians(self):
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            self._create_test_image(folder / "left.bmp", (255, 64, 64))
+            self._create_test_image(folder / "right.bmp", (64, 64, 255))
+
+            scene_path = create_gaussian_scene_file(folder)
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            improved_scene = improve_gaussian_scene_consistency(scene, folder, step_size=1.0)
+            consistent_score = evaluate_gaussian_scene_consistency(improved_scene, folder)
+
+            noisy_scene = deepcopy(improved_scene)
+            rng = random.Random(123)
+            for gaussian_index in range(5):
+                noisy_scene["gaussians"].append({
+                    "source_image": f"random_{gaussian_index}.bmp",
+                    "position": [rng.uniform(-50.0, 50.0) for _ in range(3)],
+                    "scale": [rng.uniform(0.1, 10.0) for _ in range(3)],
+                    "rotation": [rng.uniform(-2.0, 2.0) for _ in range(4)],
+                    "color": [rng.uniform(-1.0, 2.0) for _ in range(3)],
+                    "opacity": rng.uniform(-3.0, 3.0),
+                })
+            noisy_score = evaluate_gaussian_scene_consistency(noisy_scene, folder)
+
+            self.assertAlmostEqual(consistent_score, 1.0, places=4)
+            self.assertLess(noisy_score, consistent_score)
+            self.assertLess(noisy_score, 0.5)
 
     def test_evaluate_selected_gaussian_scene_scores_existing_scene_file(self):
         with TemporaryDirectory() as temp_dir:

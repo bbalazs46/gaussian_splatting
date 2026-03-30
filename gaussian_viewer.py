@@ -349,7 +349,7 @@ def evaluate_gaussian_scene_consistency(scene_data: dict, folder_path: str | Pat
         )
         total_score += max(0.0, 1.0 - min(penalty, 1.0))
 
-    return total_score / len(images)
+    return total_score / max(len(images), len(scene_data.get("gaussians", [])), 1)
 
 
 def improve_gaussian_scene_consistency(
