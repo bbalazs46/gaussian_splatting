@@ -114,8 +114,8 @@ class Camera:
 def project_gaussians(gaussians: list[Gaussian3D], cam: Camera) -> list[dict]:
     """
     Minden Gaussian3D-t levetít 2D képernyő-koordinátákra.
-    Visszatér mélység szerint csökkentő sorrendben rendezett listával
-    (back-to-front alpha compositing-hoz).
+    Visszatér mélység szerint növekvő sorrendben rendezett listával
+    (front-to-back alpha compositing-hoz).
     """
     # Fókusztávolság pixelben  (négyzetpixel-feltétel: fx == fy)
     f_px = (HEIGHT / 2.0) / math.tan(math.radians(FOV_Y_DEG / 2.0))
@@ -171,15 +171,15 @@ def project_gaussians(gaussians: list[Gaussian3D], cam: Camera) -> list[dict]:
             "opacity":  g.opacity,
         })
 
-    # Háta → előre rendezés (Porter-Duff alpha compositing)
-    result.sort(key=lambda s: -s["depth"])
+    # Előre → hátra rendezés (transzmisszió-alapú compositing)
+    result.sort(key=lambda s: s["depth"])
     return result
 
 
 # ── Renderelő ─────────────────────────────────────────────────────────────────
 def render(projected: list[dict], fb: np.ndarray) -> None:
     """
-    Alpha compositing (Porter-Duff, back-to-front) a float32 framebuffer-re.
+    Alpha compositing (Porter-Duff, front-to-back) a float32 framebuffer-re.
       fb: (H, W, 3) float32 – függvénybe lépéskor nulla (fekete háttér)
       T:  (H, W)   float32 – fennmaradó átlátszatlanság (1 = teljesen átlátszó)
     """
@@ -213,7 +213,7 @@ def render(projected: list[dict], fb: np.ndarray) -> None:
         gauss  = np.exp(-0.5 * maha2)          # Gauss-súly  (h, w)
         alpha  = opacity * gauss               # effektív alpha  (h, w)
 
-        # C_out += T * alpha * color  (Porter-Duff over, back-to-front)
+        # C_out += T * alpha * color  (Porter-Duff over, front-to-back)
         T_crop = T[y0:y1, x0:x1]
         contrib = T_crop * alpha
         fb[y0:y1, x0:x1, 0] += contrib * color[0]
