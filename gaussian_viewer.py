@@ -288,6 +288,30 @@ def _build_initial_gaussian_entry(image_name: str, camera_angles: dict, stats: d
     }
 
 
+def _interpolate_gaussian_entry(base_gaussian: dict, target_gaussian: dict, step_size: float) -> dict:
+    """Két Gaussian-bejegyzés között interpolál a megadott lépésmérettel."""
+    return {
+        "source_image": target_gaussian["source_image"],
+        "position": (
+            (1.0 - step_size) * np.asarray(base_gaussian.get("position", target_gaussian["position"]), dtype=np.float64) +
+            step_size * np.asarray(target_gaussian["position"], dtype=np.float64)
+        ).tolist(),
+        "scale": (
+            (1.0 - step_size) * np.asarray(base_gaussian.get("scale", target_gaussian["scale"]), dtype=np.float64) +
+            step_size * np.asarray(target_gaussian["scale"], dtype=np.float64)
+        ).tolist(),
+        "color": (
+            (1.0 - step_size) * np.asarray(base_gaussian.get("color", target_gaussian["color"]), dtype=np.float64) +
+            step_size * np.asarray(target_gaussian["color"], dtype=np.float64)
+        ).tolist(),
+        "rotation": target_gaussian["rotation"],
+        "opacity": float(
+            (1.0 - step_size) * float(base_gaussian.get("opacity", target_gaussian["opacity"])) +
+            step_size * float(target_gaussian["opacity"])
+        ),
+    }
+
+
 def _quaternion_distance(lhs: np.ndarray, rhs: np.ndarray) -> float:
     """Előjelfüggetlen távolság két kvaternió között."""
     lhs = np.asarray(lhs, dtype=np.float64)
@@ -455,28 +479,13 @@ def improve_gaussian_scene_consistency(
         target_gaussian = _build_gaussian_entry(image_name, camera_angles, stats)
         gaussian = gaussians_by_image.get(image_name)
         if gaussian is None:
-            new_gaussians.append(target_gaussian)
+            if step_size <= 0.0:
+                continue
+            gaussian = _build_initial_gaussian_entry(image_name, camera_angles, stats)
+            new_gaussians.append(_interpolate_gaussian_entry(gaussian, target_gaussian, step_size))
             continue
 
-        gaussian["source_image"] = image_name
-        gaussian["position"] = (
-            (1.0 - step_size) * np.asarray(gaussian.get("position", target_gaussian["position"]), dtype=np.float64) +
-            step_size * np.asarray(target_gaussian["position"], dtype=np.float64)
-        ).tolist()
-        gaussian["scale"] = (
-            (1.0 - step_size) * np.asarray(gaussian.get("scale", target_gaussian["scale"]), dtype=np.float64) +
-            step_size * np.asarray(target_gaussian["scale"], dtype=np.float64)
-        ).tolist()
-        gaussian["color"] = (
-            (1.0 - step_size) * np.asarray(gaussian.get("color", target_gaussian["color"]), dtype=np.float64) +
-            step_size * np.asarray(target_gaussian["color"], dtype=np.float64)
-        ).tolist()
-        gaussian["rotation"] = target_gaussian["rotation"]
-        gaussian["opacity"] = float(
-            (1.0 - step_size) * float(gaussian.get("opacity", target_gaussian["opacity"])) +
-            step_size * float(target_gaussian["opacity"])
-        )
-        new_gaussians.append(gaussian)
+        new_gaussians.append(_interpolate_gaussian_entry(gaussian, target_gaussian, step_size))
 
     improved_scene["folder"] = str(folder)
     improved_scene["gaussians"] = new_gaussians
